@@ -1,0 +1,24 @@
+# Normalisation des fins de ligne — projet Godot
+* text=auto eol=lf
+
+# Fichiers texte Godot
+*.gd        text eol=lf
+*.tres      text eol=lf
+*.tscn      text eol=lf
+*.godot     text eol=lf
+*.cfg       text eol=lf
+*.import    text eol=lf
+*.md        text eol=lf
+
+# Binaires (pas de conversion)
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.webp      binary
+*.ogg       binary
+*.wav       binary
+*.mp3       binary
+*.ttf       binary
+*.otf       binary
+*.glb       binary
+*.blend     binary

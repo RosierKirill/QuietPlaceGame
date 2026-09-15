@@ -1,0 +1,30 @@
+# Godot 4+ specific ignores
+# (Aligné sur le template officiel github/gitignore — Godot.gitignore)
+# En Godot 4, on IGNORE .godot/ mais on VERSIONNE les fichiers *.import
+# (ils portent les UID des ressources — ne pas les ignorer).
+.godot/
+/android/
+
+# Exports / builds
+/build/
+/exports/
+export_presets.cfg
+*.exe
+*.pck
+*.zip
+*.dmg
+*.x86_64
+*.app
+
+# Mono / C# (au cas où un module serait ajouté plus tard)
+.mono/
+data_*/
+mono_crash.*.json
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
