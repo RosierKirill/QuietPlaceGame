@@ -1,7 +1,8 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://ui/hud.gd" id="1_hud"]
 [ext_resource type="PackedScene" path="res://ui/inventory/inventory_panel.tscn" id="2_inventory"]
+[ext_resource type="PackedScene" path="res://ui/inventory/hotbar.tscn" id="3_hotbar"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_health"]
 bg_color = Color(0.74, 0.19, 0.19, 1)
@@ -78,4 +79,7 @@ value = 100.0
 show_percentage = false
 
 [node name="InventoryPanel" parent="." instance=ExtResource("2_inventory")]
+inventory_path = NodePath("../../Inventory")
+
+[node name="Hotbar" parent="." instance=ExtResource("3_hotbar")]
 inventory_path = NodePath("../../Inventory")

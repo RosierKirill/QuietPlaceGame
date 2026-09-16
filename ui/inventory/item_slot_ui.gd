@@ -37,6 +37,11 @@ func display(stack: ItemStack) -> void:
 	tooltip_text = "%s\n%s" % [stack.item.display_name, stack.item.description]
 
 
+## Met en évidence l'emplacement quand il est celui sélectionné dans la hotbar.
+func set_selected(selected: bool) -> void:
+	modulate = Color(1.35, 1.35, 1.1) if selected else Color.WHITE
+
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mouse_event := event as InputEventMouseButton
