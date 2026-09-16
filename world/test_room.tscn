@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=3 uid="uid://c0dj01gi5y57b"]
+[gd_scene load_steps=23 format=3 uid="uid://c0dj01gi5y57b"]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
@@ -6,6 +6,10 @@
 [ext_resource type="Resource" path="res://items/wood.tres" id="4_wood"]
 [ext_resource type="Resource" path="res://items/stone.tres" id="5_stone"]
 [ext_resource type="Resource" path="res://items/dagger.tres" id="6_dagger"]
+[ext_resource type="PackedScene" path="res://entities/resources/tree.tscn" id="7_tree"]
+[ext_resource type="PackedScene" path="res://entities/resources/stone.tscn" id="8_stone"]
+[ext_resource type="PackedScene" path="res://entities/resources/iron_vein.tscn" id="9_iron"]
+[ext_resource type="PackedScene" path="res://entities/resources/coal_vein.tscn" id="10_coal"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 
@@ -131,3 +135,18 @@ quantity = 3
 [node name="DaggerPickup" parent="." instance=ExtResource("3_world_item")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
 item = ExtResource("6_dagger")
+
+[node name="Tree1" parent="." instance=ExtResource("7_tree")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0, -4)
+
+[node name="Tree2" parent="." instance=ExtResource("7_tree")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8.5, 0, -1)
+
+[node name="Stone1" parent="." instance=ExtResource("8_stone")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 0, -5)
+
+[node name="IronVein1" parent="." instance=ExtResource("9_iron")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8.5, 0, -7)
+
+[node name="CoalVein1" parent="." instance=ExtResource("10_coal")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5.5, 0, -8.5)
