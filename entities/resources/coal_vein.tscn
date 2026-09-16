@@ -1,0 +1,45 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://entities/resources/harvestable.gd" id="1_harvestable"]
+[ext_resource type="Script" path="res://systems/combat/health.gd" id="2_health"]
+[ext_resource type="Script" path="res://systems/combat/hurtbox.gd" id="3_hurtbox"]
+[ext_resource type="Resource" path="res://items/coal_ore.tres" id="4_item"]
+
+[sub_resource type="StandardMaterial3D" id="Material_body"]
+albedo_color = Color(0.22, 0.23, 0.25, 1)
+roughness = 0.9
+
+[sub_resource type="BoxMesh" id="Mesh_body"]
+material = SubResource("Material_body")
+size = Vector3(1.1, 1.1, 1.1)
+
+[sub_resource type="BoxShape3D" id="Shape_body"]
+size = Vector3(1.1, 1.1, 1.1)
+
+[node name="CoalVein" type="StaticBody3D"]
+script = ExtResource("1_harvestable")
+drop_item = ExtResource("4_item")
+drop_minimum = 2
+drop_maximum = 4
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
+mesh = SubResource("Mesh_body")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
+shape = SubResource("Shape_body")
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("2_health")
+max_health = 90.0
+
+[node name="Hurtbox" type="Area3D" parent="."]
+collision_layer = 2
+collision_mask = 0
+script = ExtResource("3_hurtbox")
+health = NodePath("../Health")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Hurtbox"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
+shape = SubResource("Shape_body")
