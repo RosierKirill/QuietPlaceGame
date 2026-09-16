@@ -1,7 +1,11 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=20 format=3]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
+[ext_resource type="PackedScene" path="res://entities/items/world_item.tscn" id="3_world_item"]
+[ext_resource type="Resource" path="res://items/wood.tres" id="4_wood"]
+[ext_resource type="Resource" path="res://items/stone.tres" id="5_stone"]
+[ext_resource type="Resource" path="res://items/dagger.tres" id="6_dagger"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 
@@ -115,3 +119,18 @@ shape = SubResource("BoxShape3D_crate")
 [node name="Interactable" type="Node3D" parent="Crate"]
 script = ExtResource("2_interactable")
 prompt = "Examiner la caisse"
+
+[node name="WoodPickup" parent="." instance=ExtResource("3_world_item")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, 2)
+item = ExtResource("4_wood")
+quantity = 5
+
+[node name="StonePickup" parent="." instance=ExtResource("3_world_item")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.5, 0, 1)
+item = ExtResource("5_stone")
+quantity = 3
+
+[node name="DaggerPickup" parent="." instance=ExtResource("3_world_item")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
+item = ExtResource("6_dagger")
+quantity = 1
