@@ -22,6 +22,8 @@ func _ready() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	_forget_destroyed_focus()
+
 	var found := _find_focused_interactable()
 	if found != _focused:
 		_focused = found
@@ -29,8 +31,19 @@ func _physics_process(_delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("interact") and _focused != null:
+	if event.is_action_pressed("interact") and is_instance_valid(_focused):
 		_focused.interact(interactor)
+
+
+## Oublie une cible détruite entre deux images — objet ramassé, ressource abattue.
+##
+## Sans ça, l'invite resterait affichée indéfiniment : une référence détruite est
+## considérée comme égale à null, donc la comparaison avec la nouvelle cible ne
+## détecte aucun changement et le signal n'est jamais émis.
+func _forget_destroyed_focus() -> void:
+	if _focused != null and not is_instance_valid(_focused):
+		_focused = null
+		focus_changed.emit(null)
 
 
 ## Retourne l'Interactable visé par le rayon, ou null s'il n'y en a pas.
@@ -39,7 +52,7 @@ func _find_focused_interactable() -> Interactable:
 		return null
 
 	var collider := get_collider()
-	if collider == null or not collider is Node:
+	if not is_instance_valid(collider) or not collider is Node:
 		return null
 
 	for child in (collider as Node).get_children():
