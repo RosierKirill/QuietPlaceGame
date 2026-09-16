@@ -1,6 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://player/player_controller.gd" id="1_controller"]
+[ext_resource type="Script" path="res://systems/interaction/interaction_ray.gd" id="2_ray"]
+[ext_resource type="PackedScene" path="res://ui/hud.tscn" id="3_hud"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
 radius = 0.4
@@ -17,3 +19,10 @@ shape = SubResource("CapsuleShape3D_body")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
 
 [node name="Camera3D" type="Camera3D" parent="CameraPivot"]
+
+[node name="InteractionRay" type="RayCast3D" parent="CameraPivot/Camera3D"]
+target_position = Vector3(0, 0, -3)
+script = ExtResource("2_ray")
+
+[node name="Hud" parent="." instance=ExtResource("3_hud")]
+interaction_ray_path = NodePath("../CameraPivot/Camera3D/InteractionRay")
