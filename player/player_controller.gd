@@ -11,6 +11,10 @@ extends CharacterBody3D
 @export_group("Déplacement")
 ## Vitesse de marche, en mètres par seconde.
 @export var walk_speed: float = 5.0
+## Vitesse en sprint, en mètres par seconde.
+@export var sprint_speed: float = 8.0
+## Vitesse verticale communiquée au saut, en mètres par seconde.
+@export var jump_velocity: float = 4.5
 ## Accélération au sol. Plus la valeur est haute, plus la prise en main est sèche.
 @export var acceleration: float = 12.0
 ## Freinage appliqué quand aucune direction n'est demandée.
@@ -43,9 +47,16 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_handle_jump()
 	_apply_gravity(delta)
 	_apply_horizontal_movement(delta)
 	move_and_slide()
+
+
+## Déclenche un saut si la touche est pressée et que le joueur touche le sol.
+func _handle_jump() -> void:
+	if Input.is_action_just_pressed("jump") and is_on_floor():
+		velocity.y = jump_velocity
 
 
 ## Applique la gravité tant que le joueur n'est pas au sol.
@@ -63,12 +74,13 @@ func _apply_horizontal_movement(delta: float) -> void:
 	# détermine où est "devant".
 	var direction := (transform.basis * Vector3(input_direction.x, 0.0, input_direction.y)).normalized()
 	var horizontal_velocity := Vector3(velocity.x, 0.0, velocity.z)
+	var target_speed := sprint_speed if Input.is_action_pressed("sprint") else walk_speed
 
 	if direction.is_zero_approx():
 		horizontal_velocity = horizontal_velocity.move_toward(Vector3.ZERO, friction * delta)
 	else:
 		horizontal_velocity = horizontal_velocity.move_toward(
-			direction * walk_speed, acceleration * delta
+			direction * target_speed, acceleration * delta
 		)
 
 	velocity.x = horizontal_velocity.x
