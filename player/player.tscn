@@ -1,10 +1,11 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://player/player_controller.gd" id="1_controller"]
 [ext_resource type="Script" path="res://systems/interaction/interaction_ray.gd" id="2_ray"]
 [ext_resource type="PackedScene" path="res://ui/hud.tscn" id="3_hud"]
 [ext_resource type="Script" path="res://systems/combat/health.gd" id="4_health"]
 [ext_resource type="Script" path="res://systems/combat/energy.gd" id="5_energy"]
+[ext_resource type="Script" path="res://systems/inventory/inventory.gd" id="6_inventory"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
 radius = 0.4
@@ -31,6 +32,9 @@ script = ExtResource("4_health")
 
 [node name="Energy" type="Node" parent="."]
 script = ExtResource("5_energy")
+
+[node name="Inventory" type="Node" parent="."]
+script = ExtResource("6_inventory")
 
 [node name="Hud" parent="." instance=ExtResource("3_hud")]
 interaction_ray_path = NodePath("../CameraPivot/Camera3D/InteractionRay")

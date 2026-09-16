@@ -42,6 +42,10 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Quand une interface est ouverte, elle a la main sur la souris.
+	if UiState.is_any_open():
+		return
+
 	if event is InputEventMouseMotion and _is_mouse_captured():
 		_rotate_view(event.relative)
 	elif event.is_action_pressed("ui_cancel"):

@@ -1,0 +1,50 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://ui/inventory/item_slot_ui.gd" id="1_slot"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_slot"]
+bg_color = Color(0.13, 0.14, 0.16, 0.9)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.29, 0.31, 0.34, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[node name="ItemSlotUI" type="Panel"]
+custom_minimum_size = Vector2(64, 64)
+theme_override_styles/panel = SubResource("StyleBoxFlat_slot")
+script = ExtResource("1_slot")
+
+[node name="Icon" type="TextureRect" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = -6.0
+offset_bottom = -6.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Quantity" type="Label" parent="."]
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -34.0
+offset_top = -24.0
+offset_right = -4.0
+offset_bottom = -2.0
+grow_horizontal = 0
+grow_vertical = 0
+mouse_filter = 2
+horizontal_alignment = 2
+vertical_alignment = 2

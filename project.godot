@@ -17,6 +17,10 @@ run/main_scene="res://world/test_room.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+UiState="*res://autoload/ui_state.gd"
+
 [display]
 
 window/size/viewport_width=1280
