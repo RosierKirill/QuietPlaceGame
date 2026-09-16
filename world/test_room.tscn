@@ -1,4 +1,4 @@
-[gd_scene load_steps=23 format=3 uid="uid://c0dj01gi5y57b"]
+[gd_scene load_steps=26 format=3 uid="uid://c0dj01gi5y57b"]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
@@ -10,6 +10,8 @@
 [ext_resource type="PackedScene" path="res://entities/resources/stone.tscn" id="8_stone"]
 [ext_resource type="PackedScene" path="res://entities/resources/iron_vein.tscn" id="9_iron"]
 [ext_resource type="PackedScene" path="res://entities/resources/coal_vein.tscn" id="10_coal"]
+[ext_resource type="PackedScene" path="res://entities/mobs/zombie.tscn" id="11_zombie"]
+[ext_resource type="PackedScene" path="res://entities/mobs/sheep.tscn" id="12_sheep"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 
@@ -51,6 +53,10 @@ roughness = 0.8
 material = SubResource("StandardMaterial3D_crate")
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_crate"]
+
+[sub_resource type="NavigationMesh" id="NavigationMesh_floor"]
+vertices = PackedVector3Array(-14, 0.05, -14, 14, 0.05, -14, 14, 0.05, 14, -14, 0.05, 14)
+polygons = [PackedInt32Array(0, 3, 2), PackedInt32Array(0, 2, 1)]
 
 [node name="TestRoom" type="Node3D"]
 
@@ -150,3 +156,15 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8.5, 0, -7)
 
 [node name="CoalVein1" parent="." instance=ExtResource("10_coal")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5.5, 0, -8.5)
+
+[node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
+navigation_mesh = SubResource("NavigationMesh_floor")
+
+[node name="Zombie1" parent="." instance=ExtResource("11_zombie")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 0, -9)
+
+[node name="Sheep1" parent="." instance=ExtResource("12_sheep")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3, 0, 9)
+
+[node name="Sheep2" parent="." instance=ExtResource("12_sheep")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 0, 7)
