@@ -14,6 +14,8 @@ signal focus_changed(interactable: Interactable)
 
 ## Interactable actuellement visé, ou null.
 var _focused: Interactable = null
+## Reflète ce que l'interface affiche réellement, indépendamment de _focused.
+var _prompt_shown: bool = false
 
 
 func _ready() -> void:
@@ -22,28 +24,26 @@ func _ready() -> void:
 
 
 func _physics_process(_delta: float) -> void:
-	_forget_destroyed_focus()
-
 	var found := _find_focused_interactable()
-	if found != _focused:
-		_focused = found
-		focus_changed.emit(_focused)
+
+	# Une cible détruite entre deux images — objet ramassé, arbre abattu — laisse
+	# une référence dont la comparaison n'est pas fiable. On la ramène à null.
+	var current: Interactable = _focused if is_instance_valid(_focused) else null
+
+	# On compare aussi l'état réellement affiché : quand la cible est détruite,
+	# l'ancienne et la nouvelle valent toutes deux null alors que l'invite est
+	# encore à l'écran, et ce seul test permet de la faire disparaître.
+	if found == current and _prompt_shown == (found != null):
+		return
+
+	_focused = found
+	_prompt_shown = found != null
+	focus_changed.emit(found)
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("interact") and is_instance_valid(_focused):
 		_focused.interact(interactor)
-
-
-## Oublie une cible détruite entre deux images — objet ramassé, ressource abattue.
-##
-## Sans ça, l'invite resterait affichée indéfiniment : une référence détruite est
-## considérée comme égale à null, donc la comparaison avec la nouvelle cible ne
-## détecte aucun changement et le signal n'est jamais émis.
-func _forget_destroyed_focus() -> void:
-	if _focused != null and not is_instance_valid(_focused):
-		_focused = null
-		focus_changed.emit(null)
 
 
 ## Retourne l'Interactable visé par le rayon, ou null s'il n'y en a pas.
