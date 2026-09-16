@@ -1,0 +1,33 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://entities/stations/crafting_table.gd" id="1_table"]
+[ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
+[ext_resource type="Resource" path="res://items/recipes/planks.tres" id="3_planks"]
+[ext_resource type="Resource" path="res://items/recipes/iron_ingot.tres" id="4_ingot"]
+
+[sub_resource type="StandardMaterial3D" id="Material_table"]
+albedo_color = Color(0.45, 0.31, 0.18, 1)
+roughness = 0.85
+
+[sub_resource type="BoxMesh" id="Mesh_table"]
+material = SubResource("Material_table")
+size = Vector3(1.4, 1, 1.4)
+
+[sub_resource type="BoxShape3D" id="Shape_table"]
+size = Vector3(1.4, 1, 1.4)
+
+[node name="CraftingTable" type="StaticBody3D"]
+script = ExtResource("1_table")
+recipes = Array[Resource]([ExtResource("3_planks"), ExtResource("4_ingot")])
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+mesh = SubResource("Mesh_table")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+shape = SubResource("Shape_table")
+
+[node name="Interactable" type="Node3D" parent="."]
+script = ExtResource("2_interactable")
+prompt = "Fabriquer"

@@ -96,5 +96,7 @@ func _apply_selection() -> void:
 	selection_changed.emit(_selected_index, get_selected_stack())
 
 
-func _on_drop_requested(from_index: int, to_index: int) -> void:
+func _on_drop_requested(
+	_from_tag: StringName, from_index: int, _to_tag: StringName, to_index: int
+) -> void:
 	_inventory.move_slot(from_index, to_index)

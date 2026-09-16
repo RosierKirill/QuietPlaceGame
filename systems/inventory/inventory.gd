@@ -162,6 +162,28 @@ func split_slot(index: int) -> void:
 	changed.emit()
 
 
+## Transfère le contenu de l'emplacement [param index] vers [param destination].
+## Ce qui n'entre pas reste en place.
+func transfer_slot_to(index: int, destination: Inventory) -> void:
+	if destination == null or destination == self or not _is_valid_index(index):
+		return
+
+	var source := slots[index]
+	if source.is_empty():
+		return
+
+	var left_over := destination.add_item(source.item, source.quantity)
+
+	if left_over == source.quantity:
+		return
+
+	source.quantity = left_over
+	if source.quantity <= 0:
+		source.clear()
+
+	changed.emit()
+
+
 func _find_empty_slot() -> int:
 	for i in slots.size():
 		if slots[i].is_empty():

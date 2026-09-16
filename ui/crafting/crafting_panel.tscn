@@ -1,0 +1,59 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://ui/crafting/crafting_panel.gd" id="1_crafting"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bg"]
+bg_color = Color(0.09, 0.1, 0.11, 0.95)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.35, 0.37, 0.4, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[node name="CraftingPanel" type="Control"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("1_crafting")
+
+[node name="Background" type="PanelContainer" parent="."]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -280.0
+offset_top = -160.0
+offset_right = 280.0
+offset_bottom = 160.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_bg")
+
+[node name="Margin" type="MarginContainer" parent="Background"]
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 18
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 18
+
+[node name="Content" type="VBoxContainer" parent="Background/Margin"]
+theme_override_constants/separation = 14
+
+[node name="Title" type="Label" parent="Background/Margin/Content"]
+text = "Table de fabrication"
+horizontal_alignment = 1
+
+[node name="RecipeList" type="VBoxContainer" parent="Background/Margin/Content"]
+theme_override_constants/separation = 8
+
+[node name="Hint" type="Label" parent="Background/Margin/Content"]
+modulate = Color(0.65, 0.65, 0.65, 1)
+text = "Échap pour fermer"
+horizontal_alignment = 1

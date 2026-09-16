@@ -14,6 +14,8 @@ extends CanvasLayer
 @export var energy_path: NodePath
 
 @onready var _interaction_prompt: Label = $InteractionPrompt
+@onready var _crafting_panel: CraftingPanel = $CraftingPanel
+@onready var _container_panel: ContainerPanel = $ContainerPanel
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
 
@@ -52,6 +54,16 @@ func _bind_energy() -> void:
 
 	energy.energy_changed.connect(_on_energy_changed)
 	_on_energy_changed(energy.current_energy, energy.max_energy)
+
+
+## Ouvre l'interface de fabrication pour [param recipes].
+func open_crafting(recipes: Array, inventory: Inventory) -> void:
+	_crafting_panel.open_with(recipes, inventory)
+
+
+## Ouvre l'interface d'un conteneur face à l'inventaire du joueur.
+func open_container(container: Inventory, player_inventory: Inventory) -> void:
+	_container_panel.open_with(container, player_inventory)
 
 
 ## Affiche ou masque l'invite selon l'objet visé.

@@ -7,13 +7,16 @@ extends Panel
 ## Ne modifie jamais l'inventaire lui-même : il remonte l'intention via
 ## [signal drop_requested], que le panneau traduit en appel au modèle.
 
-## Émis quand une pile est lâchée sur cet emplacement.
-signal drop_requested(from_index: int, to_index: int)
+## Émis quand une pile est lâchée sur cet emplacement. Les étiquettes
+## identifient l'inventaire de départ et celui d'arrivée, qui peuvent différer.
+signal drop_requested(from_tag: StringName, from_index: int, to_tag: StringName, to_index: int)
 ## Émis sur clic droit, pour scinder la pile en deux.
 signal split_requested(index: int)
 
 ## Position de cet emplacement dans l'inventaire.
 @export var slot_index: int = 0
+## Inventaire auquel appartient cet emplacement, renseigné par le panneau.
+var inventory_tag: StringName = &"player"
 
 @onready var _icon: TextureRect = $Icon
 @onready var _quantity_label: Label = $Quantity
@@ -61,7 +64,7 @@ func _get_drag_data(_at_position: Vector2) -> Variant:
 	preview.size = Vector2(48, 48)
 	set_drag_preview(preview)
 
-	return {"source_index": slot_index}
+	return {"source_index": slot_index, "source_tag": inventory_tag}
 
 
 func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
@@ -69,4 +72,10 @@ func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
 
 
 func _drop_data(_at_position: Vector2, data: Variant) -> void:
-	drop_requested.emit(int((data as Dictionary)["source_index"]), slot_index)
+	var payload := data as Dictionary
+	drop_requested.emit(
+		payload.get("source_tag", &"player"),
+		int(payload["source_index"]),
+		inventory_tag,
+		slot_index
+	)

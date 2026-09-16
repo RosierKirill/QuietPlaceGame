@@ -1,0 +1,35 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://entities/stations/chest.gd" id="1_chest"]
+[ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
+[ext_resource type="Script" path="res://systems/inventory/inventory.gd" id="3_inventory"]
+
+[sub_resource type="StandardMaterial3D" id="Material_chest"]
+albedo_color = Color(0.36, 0.25, 0.14, 1)
+roughness = 0.8
+
+[sub_resource type="BoxMesh" id="Mesh_chest"]
+material = SubResource("Material_chest")
+size = Vector3(1.1, 0.8, 0.8)
+
+[sub_resource type="BoxShape3D" id="Shape_chest"]
+size = Vector3(1.1, 0.8, 0.8)
+
+[node name="Chest" type="StaticBody3D"]
+script = ExtResource("1_chest")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+mesh = SubResource("Mesh_chest")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+shape = SubResource("Shape_chest")
+
+[node name="Inventory" type="Node" parent="."]
+script = ExtResource("3_inventory")
+slot_count = 18
+
+[node name="Interactable" type="Node3D" parent="."]
+script = ExtResource("2_interactable")
+prompt = "Ouvrir le coffre"
