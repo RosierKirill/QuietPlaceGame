@@ -15,6 +15,8 @@ extends CharacterBody3D
 @export var sprint_speed: float = 8.0
 ## Vitesse verticale communiquée au saut, en mètres par seconde.
 @export var jump_velocity: float = 4.5
+## Énergie consommée par seconde de sprint.
+@export var sprint_energy_per_second: float = 20.0
 ## Accélération au sol. Plus la valeur est haute, plus la prise en main est sèche.
 @export var acceleration: float = 12.0
 ## Freinage appliqué quand aucune direction n'est demandée.
@@ -27,6 +29,8 @@ extends CharacterBody3D
 @export var pitch_limit_degrees: float = 89.0
 
 @onready var _camera_pivot: Node3D = $CameraPivot
+@onready var _health: Health = $Health
+@onready var _energy: Energy = $Energy
 
 ## Gravité du projet, lue une seule fois au chargement.
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
@@ -34,6 +38,7 @@ var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 
 
 func _ready() -> void:
 	_set_mouse_captured(true)
+	_health.died.connect(_on_died)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -74,7 +79,12 @@ func _apply_horizontal_movement(delta: float) -> void:
 	# détermine où est "devant".
 	var direction := (transform.basis * Vector3(input_direction.x, 0.0, input_direction.y)).normalized()
 	var horizontal_velocity := Vector3(velocity.x, 0.0, velocity.z)
-	var target_speed := sprint_speed if Input.is_action_pressed("sprint") else walk_speed
+	var target_speed := walk_speed
+
+	# On ne sprinte que si le joueur avance ET qu'il reste de l'énergie à payer.
+	var wants_sprint := Input.is_action_pressed("sprint") and not direction.is_zero_approx()
+	if wants_sprint and _energy.try_consume(sprint_energy_per_second * delta):
+		target_speed = sprint_speed
 
 	if direction.is_zero_approx():
 		horizontal_velocity = horizontal_velocity.move_toward(Vector3.ZERO, friction * delta)
@@ -97,6 +107,13 @@ func _rotate_view(mouse_delta: Vector2) -> void:
 		-pitch_limit,
 		pitch_limit
 	)
+
+
+## Réaction à la mort du joueur : la vue est libérée et le déplacement coupé.
+## Sera remplacé par un véritable écran de mort quand le jeu en aura un.
+func _on_died() -> void:
+	set_physics_process(false)
+	_set_mouse_captured(false)
 
 
 func _set_mouse_captured(captured: bool) -> void:

@@ -1,6 +1,20 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://ui/hud.gd" id="1_hud"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_health"]
+bg_color = Color(0.74, 0.19, 0.19, 1)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_energy"]
+bg_color = Color(0.85, 0.71, 0.23, 1)
+corner_radius_top_left = 2
+corner_radius_top_right = 2
+corner_radius_bottom_right = 2
+corner_radius_bottom_left = 2
 
 [node name="Hud" type="CanvasLayer"]
 script = ExtResource("1_hud")
@@ -36,3 +50,28 @@ grow_vertical = 2
 text = "[E] Interagir"
 horizontal_alignment = 1
 vertical_alignment = 1
+
+[node name="Bars" type="VBoxContainer" parent="."]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -92.0
+offset_right = 264.0
+offset_bottom = -24.0
+grow_vertical = 0
+theme_override_constants/separation = 8
+
+[node name="HealthBar" type="ProgressBar" parent="Bars"]
+custom_minimum_size = Vector2(240, 22)
+theme_override_styles/fill = SubResource("StyleBoxFlat_health")
+max_value = 100.0
+value = 100.0
+show_percentage = false
+
+[node name="EnergyBar" type="ProgressBar" parent="Bars"]
+custom_minimum_size = Vector2(240, 16)
+theme_override_styles/fill = SubResource("StyleBoxFlat_energy")
+max_value = 100.0
+value = 100.0
+show_percentage = false
