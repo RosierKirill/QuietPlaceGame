@@ -13,7 +13,7 @@ config_version=5
 config/name="Quiet Place Game"
 config/description="Jeu de survie / RPG à la première personne (POC v0.1.0). Moteur : Godot 4 (GDScript)."
 config/version="0.0.1"
-run/main_scene="res://world/test_room.tscn"
+run/main_scene="res://world/demo.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 config/icon="res://icon.svg"
 

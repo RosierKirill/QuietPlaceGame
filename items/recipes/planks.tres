@@ -1,4 +1,4 @@
-[gd_resource type="Resource" script_class="Recipe" load_steps=6 format=3]
+[gd_resource type="Resource" script_class="Recipe" load_steps=6 format=3 uid="uid://b1ce33e88frgr"]
 
 [ext_resource type="Script" path="res://systems/crafting/recipe.gd" id="1_recipe"]
 [ext_resource type="Script" path="res://systems/crafting/recipe_ingredient.gd" id="2_ingredient"]

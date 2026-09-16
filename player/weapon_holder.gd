@@ -37,6 +37,10 @@ func _ready() -> void:
 
 	hotbar.selection_changed.connect(_on_selection_changed)
 
+	# La hotbar annonce sa sélection dans son propre _ready, qui a pu s'exécuter
+	# avant celui-ci : on lit donc l'état courant plutôt que d'attendre le signal.
+	_on_selection_changed(0, hotbar.get_selected_stack())
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if UiState.is_any_open():
