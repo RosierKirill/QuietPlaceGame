@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="Script" path="res://player/player_controller.gd" id="1_controller"]
 [ext_resource type="Script" path="res://systems/interaction/interaction_ray.gd" id="2_ray"]
@@ -9,6 +9,9 @@
 [ext_resource type="Script" path="res://player/weapon_holder.gd" id="7_weapon"]
 [ext_resource type="Script" path="res://systems/combat/hitbox.gd" id="8_hitbox"]
 [ext_resource type="Script" path="res://systems/combat/hurtbox.gd" id="9_hurtbox"]
+[ext_resource type="Script" path="res://systems/survival/need.gd" id="10_need"]
+[ext_resource type="Script" path="res://systems/survival/need_effects.gd" id="11_effects"]
+[ext_resource type="Script" path="res://systems/survival/consumer.gd" id="12_consumer"]
 
 [sub_resource type="StandardMaterial3D" id="Material_blade"]
 albedo_color = Color(0.81, 0.83, 0.86, 1)
@@ -80,6 +83,30 @@ script = ExtResource("4_health")
 [node name="Energy" type="Node" parent="."]
 script = ExtResource("5_energy")
 
+[node name="Hunger" type="Node" parent="."]
+script = ExtResource("10_need")
+id = &"hunger"
+display_name = "Faim"
+max_value = 100.0
+decay_per_second = 0.35
+save_id = "player_hunger"
+
+[node name="Thirst" type="Node" parent="."]
+script = ExtResource("10_need")
+id = &"thirst"
+display_name = "Soif"
+max_value = 100.0
+decay_per_second = 0.55
+save_id = "player_thirst"
+
+[node name="NeedEffects" type="Node" parent="."]
+script = ExtResource("11_effects")
+damage_per_second = 2.0
+
+[node name="Consumer" type="Node" parent="."]
+script = ExtResource("12_consumer")
+hotbar_path = NodePath("../Hud/Hotbar")
+
 [node name="Inventory" type="Node" parent="."]
 script = ExtResource("6_inventory")
 save_id = "player_inventory"
@@ -88,3 +115,5 @@ save_id = "player_inventory"
 interaction_ray_path = NodePath("../CameraPivot/Camera3D/InteractionRay")
 health_path = NodePath("../Health")
 energy_path = NodePath("../Energy")
+hunger_path = NodePath("../Hunger")
+thirst_path = NodePath("../Thirst")

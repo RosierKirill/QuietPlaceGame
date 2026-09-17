@@ -15,6 +15,10 @@ signal respawn_requested
 @export var health_path: NodePath
 ## Chemin vers le composant [Energy] du joueur.
 @export var energy_path: NodePath
+## Chemin vers le [Need] de faim.
+@export var hunger_path: NodePath
+## Chemin vers le [Need] de soif.
+@export var thirst_path: NodePath
 
 @onready var _interaction_prompt: Label = $InteractionPrompt
 @onready var _inventory_panel: InventoryPanel = $InventoryPanel
@@ -26,6 +30,8 @@ signal respawn_requested
 @onready var _notice: Label = $Notice
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
+@onready var _hunger_bar: ProgressBar = $Bars/HungerBar
+@onready var _thirst_bar: ProgressBar = $Bars/ThirstBar
 
 
 func _ready() -> void:
@@ -40,6 +46,8 @@ func _ready() -> void:
 	SaveManager.save_failed.connect(_on_save_failed)
 	_bind_health()
 	_bind_energy()
+	_bind_need(hunger_path, _hunger_bar)
+	_bind_need(thirst_path, _thirst_bar)
 
 
 func _bind_interaction_ray() -> void:
@@ -140,6 +148,23 @@ func open_crafting(recipes: Array, inventory: Inventory) -> void:
 ## Ouvre l'interface d'un conteneur face à l'inventaire du joueur.
 func open_container(container: Inventory, player_inventory: Inventory) -> void:
 	_container_panel.open_with(container, player_inventory)
+
+
+## Relie un besoin à sa barre. La barre rougit au niveau critique, ce qui
+## avertit sans avoir à lire un chiffre.
+func _bind_need(path: NodePath, bar: ProgressBar) -> void:
+	var need := get_node_or_null(path) as Need
+	if need == null:
+		bar.hide()
+		return
+
+	var update := func(current: float, maximum: float) -> void:
+		bar.max_value = maximum
+		bar.value = current
+		bar.modulate = Color(1.4, 0.5, 0.5) if need.is_critical() else Color.WHITE
+
+	need.need_changed.connect(update)
+	update.call(need.current_value, need.max_value)
 
 
 ## Affiche ou masque l'invite selon l'objet visé.

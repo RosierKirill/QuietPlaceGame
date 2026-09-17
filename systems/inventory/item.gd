@@ -19,6 +19,17 @@ extends Resource
 @export_range(1, 999) var max_stack: int = 99
 
 
+## Besoins restaurés à la consommation : identifiant du besoin vers la
+## quantité rendue. Vide, l'objet n'est pas consommable.
+## Exemple : { &"hunger": 25.0 }
+@export var restores: Dictionary = {}
+
+
+## Vrai si l'objet peut être consommé.
+func is_consumable() -> bool:
+	return not restores.is_empty()
+
+
 ## Vrai si l'objet peut s'empiler dans un même emplacement.
 func is_stackable() -> bool:
 	return max_stack > 1

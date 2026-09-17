@@ -38,6 +38,7 @@ extends CharacterBody3D
 @onready var _health: Health = $Health
 @onready var _energy: Energy = $Energy
 @onready var _inventory: Inventory = $Inventory
+@onready var _need_effects: NeedEffects = $NeedEffects
 @onready var _hud: Hud = $Hud
 
 ## Transform de départ, point de réapparition par défaut.
@@ -147,7 +148,13 @@ func _apply_horizontal_movement(delta: float) -> void:
 	var target_speed := walk_speed
 
 	# On ne sprinte que si le joueur avance ET qu'il reste de l'énergie à payer.
-	var wants_sprint := Input.is_action_pressed("sprint") and not direction.is_zero_approx()
+	# Affamé ou assoiffé, on ne court plus : l'effort demande des réserves.
+	var can_sprint := not _need_effects.has_critical_need()
+	var wants_sprint := (
+		can_sprint
+		and Input.is_action_pressed("sprint")
+		and not direction.is_zero_approx()
+	)
 	if wants_sprint and _energy.try_consume(sprint_energy_per_second * delta):
 		target_speed = sprint_speed
 
