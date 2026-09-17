@@ -17,6 +17,7 @@ signal respawn_requested
 @export var energy_path: NodePath
 
 @onready var _interaction_prompt: Label = $InteractionPrompt
+@onready var _inventory_panel: InventoryPanel = $InventoryPanel
 @onready var _crafting_panel: CraftingPanel = $CraftingPanel
 @onready var _container_panel: ContainerPanel = $ContainerPanel
 @onready var _death_screen: DeathScreen = $DeathScreen
@@ -113,8 +114,20 @@ func _update_clock() -> void:
 
 
 ## Affiche l'écran de mort.
+##
+## Ferme d'abord toute interface ouverte : mourir l'inventaire ouvert laissait
+## la grille à l'écran par-dessus l'écran de mort, et faussait le décompte des
+## interfaces qui gère le curseur.
 func show_death(message: String = "") -> void:
+	close_all_panels()
 	_death_screen.show_death(message)
+
+
+## Ferme les interfaces modales encore ouvertes.
+func close_all_panels() -> void:
+	_inventory_panel.close()
+	_crafting_panel.close()
+	_container_panel.close()
 
 
 ## Ouvre l'interface de fabrication pour [param recipes].

@@ -62,11 +62,14 @@ func close() -> void:
 	if not visible:
 		return
 
-	if _container_inventory != null and _container_inventory.changed.is_connected(_refresh):
+	# Le conteneur a pu être détruit pendant qu'on l'affichait : un sac de mort
+	# se supprime dès qu'il est vide. Toute référence est donc à vérifier.
+	if is_instance_valid(_container_inventory) and _container_inventory.changed.is_connected(_refresh):
 		_container_inventory.changed.disconnect(_refresh)
-	if _player_inventory != null and _player_inventory.changed.is_connected(_refresh):
+	if is_instance_valid(_player_inventory) and _player_inventory.changed.is_connected(_refresh):
 		_player_inventory.changed.disconnect(_refresh)
 
+	_container_inventory = null
 	hide()
 	UiState.pop_ui()
 
@@ -89,10 +92,15 @@ func _build_grid(grid: GridContainer, inventory: Inventory, tag: StringName) -> 
 
 
 func _refresh() -> void:
-	for index in _container_slots.size():
+	# Si le conteneur a disparu sous nos pieds, on ferme au lieu de lire du vide.
+	if not is_instance_valid(_container_inventory) or not is_instance_valid(_player_inventory):
+		close()
+		return
+
+	for index in mini(_container_slots.size(), _container_inventory.slots.size()):
 		_container_slots[index].display(_container_inventory.slots[index])
 
-	for index in _player_slots.size():
+	for index in mini(_player_slots.size(), _player_inventory.slots.size()):
 		_player_slots[index].display(_player_inventory.slots[index])
 
 
@@ -104,7 +112,8 @@ func _on_drop_requested(
 	var source := _inventory_for(from_tag)
 	var destination := _inventory_for(to_tag)
 
-	if source == null or destination == null:
+	if not is_instance_valid(source) or not is_instance_valid(destination):
+		close()
 		return
 
 	if from_tag == to_tag:

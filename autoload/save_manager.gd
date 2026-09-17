@@ -28,8 +28,33 @@ const SAVEABLE_GROUP: StringName = &"saveable"
 
 ## Intervalle de la sauvegarde automatique, en secondes. 0 la désactive.
 var autosave_interval: float = 300.0
+## Recharge automatiquement la partie au lancement, si une sauvegarde existe.
+var load_on_start: bool = true
+## Sauvegarde automatiquement à la fermeture du jeu.
+var save_on_quit: bool = true
 
 var _autosave_timer: float = 0.0
+
+
+func _ready() -> void:
+	# On intercepte la fermeture pour avoir le temps d'écrire avant de quitter.
+	get_tree().set_auto_accept_quit(false)
+
+	if load_on_start and has_save():
+		# Le tour de boucle laisse la scène principale finir de se construire :
+		# sans lui, le joueur et le monde n'existent pas encore.
+		await get_tree().process_frame
+		load_game()
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST:
+		return
+
+	if save_on_quit:
+		save_game()
+
+	get_tree().quit()
 
 
 func _process(delta: float) -> void:
