@@ -10,19 +10,11 @@ extends StaticBody3D
 ## Émis juste avant la disparition, une fois le butin déposé.
 signal harvested
 
-## Objet lâché à l'épuisement des points de vie.
-@export var drop_item: Item
-## Quantité minimale lâchée.
-@export var drop_minimum: int = 1
-## Quantité maximale lâchée.
-@export var drop_maximum: int = 3
-## Rayon, en mètres, dans lequel le butin est dispersé autour de la ressource.
-@export var drop_spread: float = 0.6
-
-## Scène utilisée pour matérialiser le butin au sol.
-const WORLD_ITEM_SCENE: PackedScene = preload("res://entities/items/world_item.tscn")
+## Délai avant repousse, en secondes. 0 : la ressource disparaît définitivement.
+@export var regrow_delay: float = 0.0
 
 @onready var _health: Health = $Health
+@onready var _loot: LootTable = get_node_or_null("LootTable") as LootTable
 
 
 func _ready() -> void:
@@ -30,31 +22,29 @@ func _ready() -> void:
 
 
 func _on_died() -> void:
-	_spawn_drops()
+	if _loot != null:
+		_loot.drop_at(global_position, get_parent())
+
 	harvested.emit()
-	queue_free()
+
+	if regrow_delay > 0.0:
+		_hide_until_regrown()
+	else:
+		queue_free()
 
 
-## Dépose le butin au sol, légèrement dispersé autour de la ressource.
-func _spawn_drops() -> void:
-	if drop_item == null:
+## Une ressource qui repousse s'efface au lieu de disparaître, puis revient
+## avec ses points de vie restaurés. Un buisson à baies se cueille ainsi
+## plusieurs fois, contrairement à un arbre qu'on abat.
+func _hide_until_regrown() -> void:
+	visible = false
+	process_mode = Node.PROCESS_MODE_DISABLED
+
+	await get_tree().create_timer(regrow_delay).timeout
+
+	if not is_instance_valid(self):
 		return
 
-	var quantity := randi_range(drop_minimum, drop_maximum)
-	if quantity <= 0:
-		return
-
-	var drop := WORLD_ITEM_SCENE.instantiate() as WorldItem
-	drop.item = drop_item
-	drop.quantity = quantity
-
-	# Ajouté au parent, sinon il disparaîtrait avec la ressource.
-	get_parent().add_child(drop)
-	drop.global_position = global_position + _random_offset()
-
-
-## Décalage horizontal aléatoire, pour que le butin ne surgisse pas au centre exact.
-func _random_offset() -> Vector3:
-	var angle := randf() * TAU
-	var distance := randf() * drop_spread
-	return Vector3(cos(angle) * distance, 0.0, sin(angle) * distance)
+	process_mode = Node.PROCESS_MODE_INHERIT
+	visible = true
+	_health.restore()

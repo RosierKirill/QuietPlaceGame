@@ -166,5 +166,9 @@ func _on_hit_received(_amount: float, source: Node) -> void:
 
 
 func _on_died() -> void:
+	var loot := get_node_or_null("LootTable") as LootTable
+	if loot != null:
+		loot.drop_at(global_position, get_parent())
+
 	died.emit()
 	queue_free()

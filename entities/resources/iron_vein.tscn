@@ -1,8 +1,9 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://entities/resources/harvestable.gd" id="1_harvestable"]
 [ext_resource type="Script" path="res://systems/combat/health.gd" id="2_health"]
 [ext_resource type="Script" path="res://systems/combat/hurtbox.gd" id="3_hurtbox"]
+[ext_resource type="Script" path="res://systems/loot/loot_table.gd" id="5_loot"]
 [ext_resource type="Resource" path="res://items/iron_ore.tres" id="4_item"]
 
 [sub_resource type="StandardMaterial3D" id="Material_body"]
@@ -18,9 +19,6 @@ size = Vector3(1.1, 1.1, 1.1)
 
 [node name="IronVein" type="StaticBody3D"]
 script = ExtResource("1_harvestable")
-drop_item = ExtResource("4_item")
-drop_minimum = 1
-drop_maximum = 3
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
@@ -29,6 +27,12 @@ mesh = SubResource("Mesh_body")
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.55, 0)
 shape = SubResource("Shape_body")
+
+[node name="LootTable" type="Node" parent="."]
+script = ExtResource("5_loot")
+item = ExtResource("4_item")
+minimum = 1
+maximum = 3
 
 [node name="Health" type="Node" parent="."]
 script = ExtResource("2_health")

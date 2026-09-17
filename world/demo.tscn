@@ -1,4 +1,4 @@
-[gd_scene load_steps=31 format=3]
+[gd_scene load_steps=32 format=3]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
 [ext_resource type="Script" path="res://world/systems/sky_cycle.gd" id="20_sky"]
@@ -10,6 +10,7 @@
 [ext_resource type="Resource" path="res://items/stone.tres" id="5_stone"]
 [ext_resource type="Resource" path="res://items/dagger.tres" id="6_dagger"]
 [ext_resource type="PackedScene" path="res://entities/resources/tree.tscn" id="7_tree"]
+[ext_resource type="PackedScene" path="res://entities/resources/berry_bush.tscn" id="23_bush"]
 [ext_resource type="PackedScene" path="res://entities/resources/stone.tscn" id="8_stone"]
 [ext_resource type="PackedScene" path="res://entities/resources/iron_vein.tscn" id="9_iron"]
 [ext_resource type="PackedScene" path="res://entities/resources/coal_vein.tscn" id="10_coal"]
@@ -212,3 +213,9 @@ spawn_interval = 14.0
 
 [node name="WorldState" type="Node" parent="."]
 script = ExtResource("22_state")
+
+[node name="BerryBush1" parent="." instance=ExtResource("23_bush")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 0, -2)
+
+[node name="BerryBush2" parent="." instance=ExtResource("23_bush")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4, 0, 3)
