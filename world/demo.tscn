@@ -1,6 +1,8 @@
-[gd_scene load_steps=28 format=3]
+[gd_scene load_steps=30 format=3]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
+[ext_resource type="Script" path="res://world/systems/sky_cycle.gd" id="20_sky"]
+[ext_resource type="Script" path="res://entities/mobs/night_spawner.gd" id="21_spawner"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
 [ext_resource type="PackedScene" path="res://entities/items/world_item.tscn" id="3_world_item"]
 [ext_resource type="Resource" path="res://items/wood.tres" id="4_wood"]
@@ -196,3 +198,13 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, -11)
 
 [node name="Sheep3" parent="." instance=ExtResource("12_sheep")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 11)
+[node name="SkyCycle" type="Node3D" parent="."]
+script = ExtResource("20_sky")
+sun_path = NodePath("../DirectionalLight3D")
+environment_path = NodePath("../WorldEnvironment")
+
+[node name="NightSpawner" type="Node3D" parent="."]
+script = ExtResource("21_spawner")
+mob_scene = ExtResource("11_zombie")
+maximum_alive = 5
+spawn_interval = 14.0

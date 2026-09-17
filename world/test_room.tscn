@@ -1,6 +1,8 @@
-[gd_scene load_steps=28 format=3 uid="uid://c0dj01gi5y57b"]
+[gd_scene load_steps=30 format=3 uid="uid://c0dj01gi5y57b"]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
+[ext_resource type="Script" path="res://world/systems/sky_cycle.gd" id="20_sky"]
+[ext_resource type="Script" path="res://entities/mobs/night_spawner.gd" id="21_spawner"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
 [ext_resource type="PackedScene" path="res://entities/items/world_item.tscn" id="3_world_item"]
 [ext_resource type="Resource" path="res://items/wood.tres" id="4_wood"]
@@ -176,3 +178,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, 5)
 
 [node name="Chest" parent="." instance=ExtResource("14_chest")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, 5)
+[node name="SkyCycle" type="Node3D" parent="."]
+script = ExtResource("20_sky")
+sun_path = NodePath("../DirectionalLight3D")
+environment_path = NodePath("../WorldEnvironment")

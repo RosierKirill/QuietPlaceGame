@@ -20,6 +20,7 @@ signal respawn_requested
 @onready var _crafting_panel: CraftingPanel = $CraftingPanel
 @onready var _container_panel: ContainerPanel = $ContainerPanel
 @onready var _death_screen: DeathScreen = $DeathScreen
+@onready var _clock_label: Label = $Clock
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
 
@@ -28,6 +29,7 @@ func _ready() -> void:
 	_interaction_prompt.hide()
 	_death_screen.respawn_requested.connect(respawn_requested.emit)
 	_bind_interaction_ray()
+	_update_clock()
 	_bind_health()
 	_bind_energy()
 
@@ -59,6 +61,15 @@ func _bind_energy() -> void:
 
 	energy.energy_changed.connect(_on_energy_changed)
 	_on_energy_changed(energy.current_energy, energy.max_energy)
+
+
+func _process(_delta: float) -> void:
+	_update_clock()
+
+
+## Affiche l'heure et le jour courants.
+func _update_clock() -> void:
+	_clock_label.text = "Jour %d  ·  %s" % [TimeOfDay.day, TimeOfDay.get_clock_text()]
 
 
 ## Affiche l'écran de mort.

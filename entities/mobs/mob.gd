@@ -29,6 +29,12 @@ signal died
 ## État rejoint quand la créature est blessée. Vide pour ne pas réagir.
 @export var hurt_state: StringName = &""
 
+@export_group("Nuit")
+## Multiplicateur appliqué au rayon de détection une fois la nuit tombée.
+@export var night_detection_multiplier: float = 1.0
+## Multiplicateur appliqué à la vitesse d'alerte une fois la nuit tombée.
+@export var night_speed_multiplier: float = 1.0
+
 @onready var health: Health = $Health
 @onready var navigation_agent: NavigationAgent3D = $NavigationAgent3D
 
@@ -36,6 +42,8 @@ signal died
 var target: Node3D
 
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
+var _base_detection_radius: float = 0.0
+var _base_alert_speed: float = 0.0
 
 
 func _ready() -> void:
@@ -44,6 +52,13 @@ func _ready() -> void:
 	var hurtbox := get_node_or_null("Hurtbox") as Hurtbox
 	if hurtbox != null:
 		hurtbox.hit_received.connect(_on_hit_received)
+
+	# Valeurs de référence, avant toute majoration nocturne.
+	_base_detection_radius = detection_radius
+	_base_alert_speed = alert_speed
+
+	TimeOfDay.day_night_changed.connect(_on_day_night_changed)
+	_on_day_night_changed(TimeOfDay.is_night())
 
 
 func _physics_process(delta: float) -> void:
@@ -123,6 +138,17 @@ func random_point_around(radius: float) -> Vector3:
 func _face_direction(direction: Vector3, delta: float) -> void:
 	var desired_yaw := atan2(-direction.x, -direction.z)
 	rotation.y = lerp_angle(rotation.y, desired_yaw, turn_speed * delta)
+
+
+## La nuit rend certaines créatures plus dangereuses. Les multiplicateurs valant
+## 1.0 par défaut, une créature indifférente à la nuit n'a rien à configurer.
+func _on_day_night_changed(is_night: bool) -> void:
+	if is_night:
+		detection_radius = _base_detection_radius * night_detection_multiplier
+		alert_speed = _base_alert_speed * night_speed_multiplier
+	else:
+		detection_radius = _base_detection_radius
+		alert_speed = _base_alert_speed
 
 
 ## Un coup encaissé désigne son auteur comme cible et déclenche la réaction

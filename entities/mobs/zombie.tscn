@@ -30,6 +30,8 @@ alert_speed = 3.4
 detection_radius = 14.0
 lose_target_radius = 20.0
 hurt_state = &"Chase"
+night_detection_multiplier = 1.6
+night_speed_multiplier = 1.35
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
