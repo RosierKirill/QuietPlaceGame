@@ -20,8 +20,60 @@ signal item_added(item: Item, quantity: int)
 var slots: Array[ItemStack] = []
 
 
+## Identifiant sous lequel cet inventaire est sauvegardé. Doit être unique.
+@export var save_id: String = ""
+
+
 func _ready() -> void:
 	_build_slots()
+
+	if save_id != "":
+		add_to_group(&"saveable")
+
+
+# --- Contrat de sauvegarde ---
+
+func get_save_id() -> String:
+	return save_id
+
+
+## N'enregistre que l'identifiant de l'objet et sa quantité : une sauvegarde ne
+## doit jamais contenir de chemin de ressource, qui casserait au moindre
+## déplacement de fichier.
+func save_data() -> Dictionary:
+	var entries := []
+
+	for index in slots.size():
+		var stack := slots[index]
+		if stack.is_empty():
+			continue
+
+		entries.append({
+			"slot": index,
+			"item": String(stack.item.id),
+			"quantity": stack.quantity,
+		})
+
+	return {"slot_count": slots.size(), "stacks": entries}
+
+
+func load_data(data: Dictionary) -> void:
+	_build_slots()
+
+	for entry in data.get("stacks", []):
+		var index := int(entry.get("slot", -1))
+		if index < 0 or index >= slots.size():
+			continue
+
+		var item := ItemDatabase.get_item(StringName(entry.get("item", "")))
+		if item == null:
+			push_warning("Inventory : objet inconnu '%s', emplacement ignoré." % entry.get("item"))
+			continue
+
+		slots[index].item = item
+		slots[index].quantity = int(entry.get("quantity", 1))
+
+	changed.emit()
 
 
 func _build_slots() -> void:

@@ -21,6 +21,7 @@ signal respawn_requested
 @onready var _container_panel: ContainerPanel = $ContainerPanel
 @onready var _death_screen: DeathScreen = $DeathScreen
 @onready var _clock_label: Label = $Clock
+@onready var _notice: Label = $Notice
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
 
@@ -28,8 +29,13 @@ signal respawn_requested
 func _ready() -> void:
 	_interaction_prompt.hide()
 	_death_screen.respawn_requested.connect(respawn_requested.emit)
+	_notice.hide()
 	_bind_interaction_ray()
 	_update_clock()
+
+	SaveManager.game_saved.connect(_on_game_saved)
+	SaveManager.game_loaded.connect(_on_game_loaded)
+	SaveManager.save_failed.connect(_on_save_failed)
 	_bind_health()
 	_bind_energy()
 
@@ -65,6 +71,40 @@ func _bind_energy() -> void:
 
 func _process(_delta: float) -> void:
 	_update_clock()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("quick_save"):
+		SaveManager.save_game()
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("quick_load"):
+		SaveManager.load_game()
+		get_viewport().set_input_as_handled()
+
+
+func _on_game_saved() -> void:
+	_show_notice("Partie sauvegardée")
+
+
+func _on_game_loaded() -> void:
+	_show_notice("Partie chargée")
+
+
+func _on_save_failed(reason: String) -> void:
+	_show_notice(reason)
+
+
+## Affiche un message passager, puis l'efface.
+func _show_notice(text: String) -> void:
+	_notice.text = text
+	_notice.show()
+
+	var timer := get_tree().create_timer(2.5)
+	await timer.timeout
+
+	# Un autre message a pu s'afficher entre-temps : on ne l'écrase pas.
+	if _notice.text == text:
+		_notice.hide()
 
 
 ## Affiche l'heure et le jour courants.

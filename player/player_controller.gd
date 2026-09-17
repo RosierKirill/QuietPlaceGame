@@ -50,6 +50,7 @@ var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 
 func _ready() -> void:
 	_set_mouse_captured(true)
 	_spawn_transform = global_transform
+	add_to_group(&"saveable")
 	_health.died.connect(_on_died)
 	_hud.respawn_requested.connect(respawn)
 
@@ -79,6 +80,54 @@ func _physics_process(delta: float) -> void:
 func _handle_jump() -> void:
 	if Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = jump_velocity
+
+
+# --- Contrat de sauvegarde ---
+
+func get_save_id() -> String:
+	return "player"
+
+
+## Enregistre la position, l'orientation et les jauges. Tout composant enfant
+## exposant save_data() est inclus automatiquement, ce qui couvrira la faim et
+## la soif sans modifier ce code.
+func save_data() -> Dictionary:
+	var components := {}
+
+	for child in get_children():
+		if child.has_method("save_data") and child.has_method("get_save_id"):
+			continue  # Sauvegardé pour son propre compte, via le groupe.
+		if child is Health:
+			components["health"] = (child as Health).current_health
+		elif child is Energy:
+			components["energy"] = (child as Energy).current_energy
+
+	return {
+		"position": [global_position.x, global_position.y, global_position.z],
+		"yaw": rotation.y,
+		"pitch": _camera_pivot.rotation.x,
+		"components": components,
+	}
+
+
+func load_data(data: Dictionary) -> void:
+	var position_values: Array = data.get("position", [])
+	if position_values.size() == 3:
+		global_position = Vector3(position_values[0], position_values[1], position_values[2])
+
+	rotation.y = float(data.get("yaw", 0.0))
+	_camera_pivot.rotation.x = float(data.get("pitch", 0.0))
+	velocity = Vector3.ZERO
+
+	var components: Dictionary = data.get("components", {})
+	if components.has("health"):
+		_health.current_health = float(components["health"])
+		_health.health_changed.emit(_health.current_health, _health.max_health)
+	if components.has("energy"):
+		_energy.current_energy = float(components["energy"])
+		_energy.energy_changed.emit(_energy.current_energy, _energy.max_energy)
+
+	set_physics_process(not _health.is_dead())
 
 
 ## Applique la gravité tant que le joueur n'est pas au sol.

@@ -29,6 +29,7 @@ shape = SubResource("Shape_chest")
 [node name="Inventory" type="Node" parent="."]
 script = ExtResource("3_inventory")
 slot_count = 18
+save_id = "chest_main"
 
 [node name="Interactable" type="Node3D" parent="."]
 script = ExtResource("2_interactable")

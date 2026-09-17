@@ -82,6 +82,7 @@ script = ExtResource("5_energy")
 
 [node name="Inventory" type="Node" parent="."]
 script = ExtResource("6_inventory")
+save_id = "player_inventory"
 
 [node name="Hud" parent="." instance=ExtResource("3_hud")]
 interaction_ray_path = NodePath("../CameraPivot/Camera3D/InteractionRay")
