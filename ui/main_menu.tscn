@@ -1,0 +1,80 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://ui/main_menu.gd" id="1_menu"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+bg_color = Color(0.11, 0.13, 0.12, 0.92)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.32, 0.38, 0.33, 1)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+
+[node name="MainMenu" type="Control"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_menu")
+
+[node name="ColorRect" type="ColorRect" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.07, 0.09, 0.08, 1)
+
+[node name="Layout" type="CenterContainer" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="Layout"]
+custom_minimum_size = Vector2(380, 0)
+theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
+
+[node name="Margin" type="MarginContainer" parent="Layout/Panel"]
+theme_override_constants/margin_left = 36
+theme_override_constants/margin_top = 32
+theme_override_constants/margin_right = 36
+theme_override_constants/margin_bottom = 32
+
+[node name="Content" type="VBoxContainer" parent="Layout/Panel/Margin"]
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="Layout/Panel/Margin/Content"]
+text = "QUIET PLACE"
+horizontal_alignment = 1
+
+[node name="Subtitle" type="Label" parent="Layout/Panel/Margin/Content"]
+modulate = Color(0.6, 0.65, 0.6, 1)
+text = "Survie · Prototype"
+horizontal_alignment = 1
+
+[node name="Spacer" type="Control" parent="Layout/Panel/Margin/Content"]
+custom_minimum_size = Vector2(0, 12)
+
+[node name="ContinueButton" type="Button" parent="Layout/Panel/Margin/Content"]
+custom_minimum_size = Vector2(0, 42)
+text = "Continuer"
+
+[node name="NewGameButton" type="Button" parent="Layout/Panel/Margin/Content"]
+custom_minimum_size = Vector2(0, 42)
+text = "Nouvelle partie"
+
+[node name="QuitButton" type="Button" parent="Layout/Panel/Margin/Content"]
+custom_minimum_size = Vector2(0, 42)
+text = "Quitter"
+
+[node name="ConfirmNewGame" type="ConfirmationDialog" parent="."]
+title = "Nouvelle partie"
+ok_button_text = "Effacer et commencer"
+dialog_text = "Une sauvegarde existe. Commencer une nouvelle partie l'effacera définitivement."

@@ -21,6 +21,7 @@ signal respawn_requested
 @onready var _crafting_panel: CraftingPanel = $CraftingPanel
 @onready var _container_panel: ContainerPanel = $ContainerPanel
 @onready var _death_screen: DeathScreen = $DeathScreen
+@onready var _pause_menu: PauseMenu = $PauseMenu
 @onready var _clock_label: Label = $Clock
 @onready var _notice: Label = $Notice
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
@@ -128,6 +129,7 @@ func close_all_panels() -> void:
 	_inventory_panel.close()
 	_crafting_panel.close()
 	_container_panel.close()
+	_pause_menu.close()
 
 
 ## Ouvre l'interface de fabrication pour [param recipes].

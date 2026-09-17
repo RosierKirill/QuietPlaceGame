@@ -60,11 +60,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if UiState.is_any_open():
 		return
 
+	# Échap appartient désormais au menu pause : le curseur suit l'état des
+	# interfaces, il n'a plus à être basculé à la main ici.
 	if event is InputEventMouseMotion and _is_mouse_captured():
 		_rotate_view(event.relative)
-	elif event.is_action_pressed("ui_cancel"):
-		# Échap libère le curseur ; un clic dans la fenêtre le recapture.
-		_set_mouse_captured(not _is_mouse_captured())
 	elif event is InputEventMouseButton and event.pressed and not _is_mouse_captured():
 		_set_mouse_captured(true)
 

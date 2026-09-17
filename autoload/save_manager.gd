@@ -29,7 +29,7 @@ const SAVEABLE_GROUP: StringName = &"saveable"
 ## Intervalle de la sauvegarde automatique, en secondes. 0 la désactive.
 var autosave_interval: float = 300.0
 ## Recharge automatiquement la partie au lancement, si une sauvegarde existe.
-var load_on_start: bool = true
+var load_on_start: bool = false
 ## Sauvegarde automatiquement à la fermeture du jeu.
 var save_on_quit: bool = true
 
@@ -40,10 +40,9 @@ func _ready() -> void:
 	# On intercepte la fermeture pour avoir le temps d'écrire avant de quitter.
 	get_tree().set_auto_accept_quit(false)
 
+	# load_on_start reste disponible pour des tests, mais la reprise passe
+	# normalement par l'écran titre, qui appelle GameManager.continue_game().
 	if load_on_start and has_save():
-		# Le tour de boucle laisse la scène principale finir de se construire :
-		# sans lui, le joueur et le monde n'existent pas encore. Pas de
-		# rechargement ici : la scène vient justement d'être créée.
 		await get_tree().process_frame
 		load_game(false)
 
@@ -70,9 +69,16 @@ func _process(delta: float) -> void:
 
 ## Écrit la partie sur disque. Retourne false en cas d'échec.
 func save_game() -> bool:
+	var saveable_nodes := get_tree().get_nodes_in_group(SAVEABLE_GROUP)
+
+	# Aucun nœud sauvegardable : on est hors partie, typiquement sur l'écran
+	# titre. Écrire ici remplacerait la sauvegarde par une partie vide.
+	if saveable_nodes.is_empty():
+		return false
+
 	var entries := {}
 
-	for node in get_tree().get_nodes_in_group(SAVEABLE_GROUP):
+	for node in saveable_nodes:
 		if not _is_saveable(node):
 			push_warning("SaveManager : '%s' est dans le groupe mais incomplet." % node)
 			continue
