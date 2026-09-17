@@ -42,9 +42,10 @@ func _ready() -> void:
 
 	if load_on_start and has_save():
 		# Le tour de boucle laisse la scène principale finir de se construire :
-		# sans lui, le joueur et le monde n'existent pas encore.
+		# sans lui, le joueur et le monde n'existent pas encore. Pas de
+		# rechargement ici : la scène vient justement d'être créée.
 		await get_tree().process_frame
-		load_game()
+		load_game(false)
 
 
 func _notification(what: int) -> void:
@@ -99,31 +100,61 @@ func save_game() -> bool:
 	return true
 
 
-## Recharge la partie depuis le disque. Retourne false en cas d'échec.
-func load_game() -> bool:
+## Recharge la partie depuis le disque.
+##
+## Reconstruit d'abord la scène, puis y applique les données. Sans ce
+## rechargement, on appliquerait la sauvegarde par-dessus l'état courant : les
+## créatures tuées et les ressources abattues resteraient absentes, puisque
+## rien ne les remettrait dans l'arbre.
+##
+## [param reload_scene] à false uniquement au lancement, où la scène est neuve.
+func load_game(reload_scene: bool = true) -> bool:
+	var payload := _read_save()
+	if payload.is_empty():
+		return false
+
+	if reload_scene:
+		get_tree().reload_current_scene()
+		# Deux tours : le premier effectue l'échange de scène, le second laisse
+		# les _ready() de la nouvelle scène s'exécuter.
+		await get_tree().process_frame
+		await get_tree().process_frame
+
+	_apply_payload(payload)
+	game_loaded.emit()
+	return true
+
+
+## Lit et valide le fichier. Retourne un dictionnaire vide en cas d'échec.
+func _read_save() -> Dictionary:
 	if not has_save():
 		save_failed.emit("Aucune sauvegarde trouvée.")
-		return false
+		return {}
 
 	var file := FileAccess.open(SAVE_PATH, FileAccess.READ)
 	if file == null:
 		save_failed.emit("Lecture impossible : %s" % FileAccess.get_open_error())
-		return false
+		return {}
 
 	var parsed: Variant = JSON.parse_string(file.get_as_text())
 	file.close()
 
 	if not parsed is Dictionary:
 		save_failed.emit("Fichier de sauvegarde illisible.")
-		return false
+		return {}
 
 	var payload := parsed as Dictionary
 
 	# On refuse plutôt que de charger n'importe comment une version inconnue.
 	if int(payload.get("format_version", 0)) != FORMAT_VERSION:
 		save_failed.emit("Sauvegarde d'une version incompatible.")
-		return false
+		return {}
 
+	return payload
+
+
+## Redistribue les données aux nœuds sauvegardables de la scène courante.
+func _apply_payload(payload: Dictionary) -> void:
 	TimeOfDay.set_time(
 		float(payload.get("time_of_day", 8.0)),
 		int(payload.get("day", 1))
@@ -137,9 +168,6 @@ func load_game() -> bool:
 		var id: String = node.call("get_save_id")
 		if entries.has(id):
 			node.call("load_data", entries[id])
-
-	game_loaded.emit()
-	return true
 
 
 func has_save() -> bool:

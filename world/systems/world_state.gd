@@ -4,9 +4,12 @@ extends Node
 ## Mémorise ce que le joueur a changé dans le monde.
 ##
 ## Deux choses seulement : les ressources déjà récoltées, qui ne doivent pas
-## réapparaître, et les objets laissés au sol. Les créatures ne sont pas
-## sauvegardées — elles réapparaissent d'elles-mêmes et les figer n'apporterait
-## rien à ce stade.
+## réapparaître, et les objets laissés au sol.
+##
+## Les créatures ne sont volontairement pas sauvegardées. Comme le chargement
+## reconstruit la scène, celles posées à la main y reviennent intactes : un
+## rechargement remet donc les zombies en jeu, ce qui est le comportement
+## attendu d'un monde vivant.
 ##
 ## NE SAUVEGARDE PAS LE TERRAIN : avec le passage au voxel, la persistance du
 ## terrain sera assurée nativement par VoxelStreamSQLite.
