@@ -1,10 +1,11 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://ui/hud.gd" id="1_hud"]
 [ext_resource type="PackedScene" path="res://ui/inventory/inventory_panel.tscn" id="2_inventory"]
 [ext_resource type="PackedScene" path="res://ui/inventory/hotbar.tscn" id="3_hotbar"]
 [ext_resource type="PackedScene" path="res://ui/crafting/crafting_panel.tscn" id="4_crafting"]
 [ext_resource type="PackedScene" path="res://ui/inventory/container_panel.tscn" id="5_container"]
+[ext_resource type="PackedScene" path="res://ui/death_screen.tscn" id="6_death"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_health"]
 bg_color = Color(0.74, 0.19, 0.19, 1)
@@ -89,3 +90,5 @@ inventory_path = NodePath("../../Inventory")
 [node name="CraftingPanel" parent="." instance=ExtResource("4_crafting")]
 
 [node name="ContainerPanel" parent="." instance=ExtResource("5_container")]
+
+[node name="DeathScreen" parent="." instance=ExtResource("6_death")]

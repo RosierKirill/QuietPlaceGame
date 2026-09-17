@@ -22,6 +22,12 @@ extends CharacterBody3D
 ## Freinage appliqué quand aucune direction n'est demandée.
 @export var friction: float = 14.0
 
+@export_group("Mort")
+## Scène du sac déposé au point de mort.
+@export var death_bag_scene: PackedScene = preload("res://entities/items/death_bag.tscn")
+## Si vrai, l'inventaire est vidé dans un sac à la mort.
+@export var drop_inventory_on_death: bool = true
+
 @export_group("Caméra")
 ## Sensibilité de la souris (radians par pixel de déplacement).
 @export var mouse_sensitivity: float = 0.002
@@ -31,6 +37,11 @@ extends CharacterBody3D
 @onready var _camera_pivot: Node3D = $CameraPivot
 @onready var _health: Health = $Health
 @onready var _energy: Energy = $Energy
+@onready var _inventory: Inventory = $Inventory
+@onready var _hud: Hud = $Hud
+
+## Transform de départ, point de réapparition par défaut.
+var _spawn_transform: Transform3D
 
 ## Gravité du projet, lue une seule fois au chargement.
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
@@ -38,7 +49,9 @@ var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 
 
 func _ready() -> void:
 	_set_mouse_captured(true)
+	_spawn_transform = global_transform
 	_health.died.connect(_on_died)
+	_hud.respawn_requested.connect(respawn)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -113,11 +126,57 @@ func _rotate_view(mouse_delta: Vector2) -> void:
 	)
 
 
-## Réaction à la mort du joueur : la vue est libérée et le déplacement coupé.
-## Sera remplacé par un véritable écran de mort quand le jeu en aura un.
+## Réaction à la mort : le butin tombe, les commandes sont coupées,
+## l'écran de mort prend la main.
 func _on_died() -> void:
 	set_physics_process(false)
-	_set_mouse_captured(false)
+	velocity = Vector3.ZERO
+
+	if drop_inventory_on_death:
+		_drop_inventory()
+
+	_hud.show_death()
+
+
+## Dépose le contenu de l'inventaire dans un sac, au point de mort.
+## Ne crée aucun sac si le joueur ne portait rien.
+func _drop_inventory() -> void:
+	if death_bag_scene == null or _inventory == null:
+		return
+
+	if not _has_any_item():
+		return
+
+	var bag := death_bag_scene.instantiate() as DeathBag
+	get_parent().add_child(bag)
+	bag.global_position = global_position
+	bag.fill_from(_inventory)
+
+
+func _has_any_item() -> bool:
+	for stack in _inventory.slots:
+		if not stack.is_empty():
+			return true
+	return false
+
+
+## Remet le joueur en jeu : retour au point d'apparition, jauges restaurées.
+## Tout composant portant une méthode restore() est réinitialisé, ce qui
+## couvrira la faim et la soif sans modifier ce code.
+func respawn() -> void:
+	global_transform = _spawn_transform
+	velocity = Vector3.ZERO
+	_camera_pivot.rotation.x = 0.0
+
+	_health.restore()
+	_energy.restore()
+
+	for child in get_children():
+		if child.has_method("restore") and child != _health and child != _energy:
+			child.call("restore")
+
+	set_physics_process(true)
+	_set_mouse_captured(true)
 
 
 func _set_mouse_captured(captured: bool) -> void:

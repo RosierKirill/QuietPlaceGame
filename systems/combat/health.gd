@@ -49,5 +49,11 @@ func heal(amount: float) -> void:
 	health_changed.emit(current_health, max_health)
 
 
+## Remet les points de vie au maximum. Utilisé à la réapparition.
+func restore() -> void:
+	current_health = max_health
+	health_changed.emit(current_health, max_health)
+
+
 func is_dead() -> bool:
 	return current_health <= 0.0

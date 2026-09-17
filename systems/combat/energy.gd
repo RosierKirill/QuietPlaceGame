@@ -54,6 +54,12 @@ func try_consume(amount: float) -> bool:
 	return true
 
 
+## Remet l'énergie au maximum. Utilisé à la réapparition.
+func restore() -> void:
+	_time_since_drain = 0.0
+	_set_energy(max_energy)
+
+
 func is_empty() -> bool:
 	return current_energy <= 0.0
 

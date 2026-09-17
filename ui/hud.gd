@@ -6,6 +6,9 @@ extends CanvasLayer
 ## Le HUD ne fait qu'observer : il se connecte aux signaux des composants du
 ## joueur et ne modifie jamais leur état.
 
+## Émis quand le joueur demande à réapparaître depuis l'écran de mort.
+signal respawn_requested
+
 ## Chemin vers le [InteractionRay] du joueur, défini dans la scène.
 @export var interaction_ray_path: NodePath
 ## Chemin vers le composant [Health] du joueur.
@@ -16,12 +19,14 @@ extends CanvasLayer
 @onready var _interaction_prompt: Label = $InteractionPrompt
 @onready var _crafting_panel: CraftingPanel = $CraftingPanel
 @onready var _container_panel: ContainerPanel = $ContainerPanel
+@onready var _death_screen: DeathScreen = $DeathScreen
 @onready var _health_bar: ProgressBar = $Bars/HealthBar
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
 
 
 func _ready() -> void:
 	_interaction_prompt.hide()
+	_death_screen.respawn_requested.connect(respawn_requested.emit)
 	_bind_interaction_ray()
 	_bind_health()
 	_bind_energy()
@@ -54,6 +59,11 @@ func _bind_energy() -> void:
 
 	energy.energy_changed.connect(_on_energy_changed)
 	_on_energy_changed(energy.current_energy, energy.max_energy)
+
+
+## Affiche l'écran de mort.
+func show_death(message: String = "") -> void:
+	_death_screen.show_death(message)
 
 
 ## Ouvre l'interface de fabrication pour [param recipes].
