@@ -1,7 +1,8 @@
-[gd_scene load_steps=30 format=3]
+[gd_scene load_steps=31 format=3]
 
 [ext_resource type="PackedScene" path="res://player/player.tscn" id="1_player"]
 [ext_resource type="Script" path="res://world/systems/sky_cycle.gd" id="20_sky"]
+[ext_resource type="Script" path="res://world/systems/world_state.gd" id="22_state"]
 [ext_resource type="Script" path="res://entities/mobs/night_spawner.gd" id="21_spawner"]
 [ext_resource type="Script" path="res://systems/interaction/interactable.gd" id="2_interactable"]
 [ext_resource type="PackedScene" path="res://entities/items/world_item.tscn" id="3_world_item"]
@@ -208,3 +209,6 @@ script = ExtResource("21_spawner")
 mob_scene = ExtResource("11_zombie")
 maximum_alive = 5
 spawn_interval = 14.0
+
+[node name="WorldState" type="Node" parent="."]
+script = ExtResource("22_state")
