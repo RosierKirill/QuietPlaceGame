@@ -1,13 +1,14 @@
 # Quiet Place Game
 
-Jeu de survie / RPG à la **première personne** — POC `v0.1.0`.
+Jeu de survie / RPG à la **première personne** — `v0.2.0`.
 Moteur : **[Godot 4](https://godotengine.org/)** · Langage : **GDScript**.
 Inspirations : Half-Life, Skyrim, 7 Days to Die, Minecraft.
 
 ## État du projet
 
-Prototype jouable de bout en bout. Toutes les mécaniques du POC sont en place :
-on se déplace, on récolte, on fabrique, on stocke, on se bat.
+Boucle de survie complète et jouable. On se déplace, on récolte, on fabrique,
+on stocke, on se bat — et il faut désormais manger, boire et survivre à la nuit.
+La partie se sauvegarde et se recharge.
 
 ## Fonctionnalités
 
@@ -22,6 +23,16 @@ on se déplace, on récolte, on fabrique, on stocke, on se bat.
 - **Créatures** — mouton passif qui fuit, zombie hostile qui poursuit et frappe
 - **Fabrication** — table de craft, recettes en ressources de données
 - **Stockage** — coffre, avec transfert par glisser-déposer entre inventaires
+- **Faim et soif** — deux besoins qui décroissent, infligent des dégâts à zéro
+  et coupent le sprint au seuil critique
+- **Nourriture** — baies, eau et viande ; un aliment se définit en données seules
+- **Repousse** — un buisson à baies se cueille indéfiniment, un arbre s'abat une fois
+- **Butin des créatures** — la brebis lâche de la viande
+- **Cycle jour/nuit** — soleil animé, nuit réellement sombre, zombies plus
+  dangereux après la tombée du jour et qui apparaissent hors du champ de vision
+- **Mort et réapparition** — écran de mort, sac de butin laissé sur place
+- **Sauvegarde** — manuelle, automatique, à la fermeture, avec écran titre
+- **Pause** — le jeu se fige réellement pendant le menu
 
 ## Prérequis
 
@@ -33,8 +44,10 @@ standard (GDScript), la version .NET n'est pas nécessaire.
 1. Ouvrir **Godot 4**, choisir `Importer` et sélectionner le fichier `project.godot`.
 2. Ouvrir le projet, puis `F5`.
 
-La scène lancée est `world/demo.tscn`. La scène `world/test_room.tscn` est conservée
-comme bac à sable minimal pour tester un système isolément.
+Le jeu démarre sur l'écran titre. « Continuer » n'apparaît que si une sauvegarde
+existe ; « Nouvelle partie » l'efface après confirmation. La partie se déroule dans
+`world/demo.tscn` ; `world/test_room.tscn` est conservée comme bac à sable minimal
+pour tester un système isolément.
 
 ## Contrôles
 
@@ -46,6 +59,9 @@ comme bac à sable minimal pour tester un système isolément.
 | Interagir / ramasser | E |
 | Attaquer | Clic gauche |
 | Inventaire | Tab |
+| Consommer l'objet sélectionné | F |
+| Pause | Échap |
+| Sauvegarde / chargement rapides | F5 / F9 |
 | Barre rapide | 1 à 6 (rangée du haut) ou molette |
 | Scinder une pile | Clic droit sur l'emplacement |
 | Fermer une interface | Échap |
@@ -64,13 +80,15 @@ attaque à vue ; le mouton s'enfuit.
 
 | Dossier | Rôle |
 |---|---|
-| `autoload/` | Singletons globaux (`UiState` : ouverture des interfaces et mode souris) |
+| `autoload/` | Singletons : `UiState`, `TimeOfDay`, `ItemDatabase`, `SaveManager`, `GameManager` |
 | `player/` | Contrôleur première personne, caméra, porte-arme |
 | `systems/ai/` | Machine à états générique |
 | `systems/combat/` | `Health`, `Energy`, `Hitbox`, `Hurtbox` |
 | `systems/crafting/` | `Recipe` et ses ingrédients |
 | `systems/interaction/` | Rayon d'interaction, composant `Interactable` |
 | `systems/inventory/` | `Item`, `ItemStack`, `Inventory` |
+| `systems/survival/` | `Need`, `NeedEffects`, `Consumer` |
+| `systems/loot/` | `LootTable`, partagée par les ressources et les créatures |
 | `entities/items/` | Objets posés au sol |
 | `entities/mobs/` | `Mob` et ses états, mouton, zombie |
 | `entities/resources/` | Ressources récoltables |
@@ -97,6 +115,14 @@ même chemin — seul diffère ce qui arrive à zéro point de vie.
 
 **Le comportement se compose dans la scène.** Mouton et zombie partagent le script
 `Mob` et la même machine à états ; seuls les états présents dans leur scène changent.
+
+**La sauvegarde ne connaît aucun système.** `SaveManager` parcourt le groupe
+`saveable`, demande à chaque nœud ses données et les lui rend au chargement. Rendre
+un système persistant ne demande donc jamais de modifier le gestionnaire.
+
+**Les composants génériques se déclinent.** `Need` est à la faim et à la soif ce que
+`Health` est aux points de vie : une seule implémentation, plusieurs instances
+réglées différemment. La température ou la fatigue n'en demanderont pas davantage.
 
 ## Licence
 
