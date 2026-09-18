@@ -1,14 +1,12 @@
 extends Node3D
 ## GAME-1204 — Le joueur marche sur le terrain généré (bac à sable Epic E12).
 ##
-## Points clés :
-##   - VoxelLodTerrain.collision_lod_count = 1 -> la collision est réellement
-##     générée au LOD 0 (0 = AUCUNE collision, cause des chutes à travers le sol).
-##   - VoxelViewer sur le joueur (portée large) -> collision générée autour de lui.
-##   - Apparition sûre : joueur gelé au-dessus du sol puis déposé dès que la
-##     collision existe (rayon vers le bas).
-##   - Filet de sécurité : s'il passe sous le monde (y < FALL_LIMIT), rattrapé.
-##   - Diagnostic : imprime une fois l'état du sol 1 s après le dépôt.
+##   - Collision réellement générée (collision_lod_count = 1).
+##   - Spawn ANALYTIQUE : on calcule la hauteur du sol et on dépose le joueur juste
+##     au-dessus -> pas de flottement en altitude, pas de chute (donc pas de dégâts).
+##   - On attend quand même la collision (rayon) avant de rendre la main.
+##   - Filet de sécurité : sous FALL_LIMIT, on remonte le joueur au-dessus du sol
+##     local et on recommence le dépôt.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 const PlayerScene := preload("res://player/player.tscn")
@@ -16,11 +14,11 @@ const PlayerScene := preload("res://player/player.tscn")
 const LOD_COUNT := 4
 const LOD_DISTANCE := 48.0
 const VIEW_DISTANCE := 256
-const COLLISION_LOD_COUNT := 1      # nb de LOD avec collision (0 = aucune !)
-const FREEZE_HEIGHT := 120.0
+const COLLISION_LOD_COUNT := 1
+const SPAWN_LIFT := 3.0          # marge au-dessus du sol calculé, à l'attente
+const DROP_MARGIN := 0.2         # dépôt final quasi au ras du sol (pas de chute)
 const SCAN_TOP := 300.0
 const SCAN_BOTTOM := -300.0
-const SPAWN_MARGIN := 1.0
 const SPAWN_TIMEOUT := 8.0
 const FALL_LIMIT := -90.0
 
@@ -49,13 +47,16 @@ func _physics_process(delta: float) -> void:
 		return
 	_settle_step(delta)
 
+func _surface_wait_pos(x: float, z: float) -> Vector3:
+	return Vector3(x, ProceduralTerrainGenerator.get_height(x, z) + SPAWN_LIFT, z)
+
 func _begin_settle() -> void:
 	_grounded = false
 	_elapsed = 0.0
 	_reported = false
 	_report_time = 0.0
 	var p := _player.global_position
-	_player.global_position = Vector3(p.x, FREEZE_HEIGHT, p.z)
+	_player.global_position = _surface_wait_pos(p.x, p.z)
 	_player.velocity = Vector3.ZERO
 	_player.set_physics_process(false)
 	push_warning("[terrain_player] Rattrapage anti-chute : le joueur était passé sous le terrain.")
@@ -70,9 +71,9 @@ func _settle_step(delta: float) -> void:
 	var hit := space.intersect_ray(query)
 	if hit:
 		print("[terrain_player] Sol détecté (collision présente) à y=%.1f" % float(hit.position.y))
-		_drop_player(float(hit.position.y) + SPAWN_MARGIN)
+		_drop_player(float(hit.position.y) + DROP_MARGIN)
 	elif _elapsed >= SPAWN_TIMEOUT:
-		push_warning("[terrain_player] Timeout : aucune collision trouvée sous le joueur (collision non générée ?).")
+		push_warning("[terrain_player] Timeout : collision non trouvée sous le joueur.")
 		_drop_player(p.y)
 
 func _drop_player(y: float) -> void:
@@ -86,7 +87,7 @@ func _drop_player(y: float) -> void:
 func _spawn_player() -> void:
 	_player = PlayerScene.instantiate()
 	add_child(_player)
-	_player.global_position = Vector3(0.0, FREEZE_HEIGHT, 0.0)
+	_player.global_position = _surface_wait_pos(0.0, 0.0)
 	_player.set_physics_process(false)
 	var viewer := VoxelViewer.new()
 	viewer.requires_collisions = true
