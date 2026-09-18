@@ -1,30 +1,34 @@
 extends Node3D
 ## GAME-1204 — Le joueur marche sur le terrain généré (bac à sable Epic E12).
 ##
-## Apparition sûre + FILET DE SÉCURITÉ anti-chute-à-travers-le-terrain :
-##   - VoxelViewer sur le joueur avec une bonne portée -> la collision est
-##     générée sur toute la colonne autour de lui, et devant lui quand il marche.
-##   - Au spawn, le joueur est gelé au-dessus du sol puis déposé dessus dès que
-##     la collision existe (rayon vers le bas).
-##   - En jeu, s'il passe quand même sous le monde (y < FALL_LIMIT), il est
-##     rattrapé et reposé sur le sol -> jamais de chute infinie.
+## Points clés :
+##   - VoxelLodTerrain.collision_lod_count = 1 -> la collision est réellement
+##     générée au LOD 0 (0 = AUCUNE collision, cause des chutes à travers le sol).
+##   - VoxelViewer sur le joueur (portée large) -> collision générée autour de lui.
+##   - Apparition sûre : joueur gelé au-dessus du sol puis déposé dès que la
+##     collision existe (rayon vers le bas).
+##   - Filet de sécurité : s'il passe sous le monde (y < FALL_LIMIT), rattrapé.
+##   - Diagnostic : imprime une fois l'état du sol 1 s après le dépôt.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 const PlayerScene := preload("res://player/player.tscn")
 
 const LOD_COUNT := 4
 const LOD_DISTANCE := 48.0
-const VIEW_DISTANCE := 256          # portée du VoxelViewer (génération + collision)
-const FREEZE_HEIGHT := 120.0        # hauteur d'attente, gelé, au-dessus du relief
+const VIEW_DISTANCE := 256
+const COLLISION_LOD_COUNT := 1      # nb de LOD avec collision (0 = aucune !)
+const FREEZE_HEIGHT := 120.0
 const SCAN_TOP := 300.0
 const SCAN_BOTTOM := -300.0
 const SPAWN_MARGIN := 1.0
 const SPAWN_TIMEOUT := 8.0
-const FALL_LIMIT := -90.0           # sous ce Y : passé à travers -> rattrapage
+const FALL_LIMIT := -90.0
 
 var _player: CharacterBody3D
 var _grounded := false
 var _elapsed := 0.0
+var _reported := false
+var _report_time := 0.0
 
 func _ready() -> void:
 	_build_environment()
@@ -34,15 +38,22 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if _grounded:
 		if _player.global_position.y < FALL_LIMIT:
-			_begin_settle()  # filet de sécurité
+			_begin_settle()
+			return
+		if not _reported:
+			_report_time += delta
+			if _report_time >= 1.0:
+				_reported = true
+				print("[terrain_player] DIAG 1s : is_on_floor=%s, y=%.1f" % [
+					str(_player.is_on_floor()), _player.global_position.y])
 		return
 	_settle_step(delta)
-
-# --- Apparition / rattrapage : gèle le joueur puis le dépose sur le sol ---
 
 func _begin_settle() -> void:
 	_grounded = false
 	_elapsed = 0.0
+	_reported = false
+	_report_time = 0.0
 	var p := _player.global_position
 	_player.global_position = Vector3(p.x, FREEZE_HEIGHT, p.z)
 	_player.velocity = Vector3.ZERO
@@ -58,8 +69,10 @@ func _settle_step(delta: float) -> void:
 	query.exclude = [_player.get_rid()]
 	var hit := space.intersect_ray(query)
 	if hit:
+		print("[terrain_player] Sol détecté (collision présente) à y=%.1f" % float(hit.position.y))
 		_drop_player(float(hit.position.y) + SPAWN_MARGIN)
 	elif _elapsed >= SPAWN_TIMEOUT:
+		push_warning("[terrain_player] Timeout : aucune collision trouvée sous le joueur (collision non générée ?).")
 		_drop_player(p.y)
 
 func _drop_player(y: float) -> void:
@@ -74,7 +87,7 @@ func _spawn_player() -> void:
 	_player = PlayerScene.instantiate()
 	add_child(_player)
 	_player.global_position = Vector3(0.0, FREEZE_HEIGHT, 0.0)
-	_player.set_physics_process(false)  # gelé tant que le sol n'est pas prêt
+	_player.set_physics_process(false)
 	var viewer := VoxelViewer.new()
 	viewer.requires_collisions = true
 	viewer.view_distance = VIEW_DISTANCE
@@ -86,7 +99,7 @@ func _build_terrain() -> void:
 	terrain.mesher = VoxelMesherTransvoxel.new()
 	terrain.generator = ProceduralTerrainGenerator.build()
 	terrain.generate_collisions = true
-	terrain.collision_lod_count = 0  # collision sur tous les LOD
+	terrain.collision_lod_count = COLLISION_LOD_COUNT
 	terrain.lod_count = LOD_COUNT
 	terrain.lod_distance = LOD_DISTANCE
 	add_child(terrain)
