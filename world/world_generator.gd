@@ -293,40 +293,75 @@ func _write_block(out_buffer: VoxelBuffer, origin: Vector3i,
 			out_buffer.fill_area(material, lo, hi, VoxelBuffer.CHANNEL_INDICES)
 
 
-## LOD lointains : silhouette simple. Le champ y est LISSE (et non binaire) :
-## de loin, les blocs ne se voient pas, et un champ lisse évite les éclats de
-## maillage aux raccords entre niveaux de détail.
+## LOD lointains : MÊME surface que le modèle en blocs, mais échantillonnée.
+##
+## ATTENTION : `origin_in_voxels` est TOUJOURS donné en voxels du niveau 0, y
+## compris pour les LOD lointains ; seul le PAS entre deux voxels du tampon vaut
+## 2^lod. C'était la cause des éclats : en prenant l'origine pour des voxels du
+## niveau courant, les niveaux lointains décrivaient un terrain pris 2^lod fois
+## trop loin, sans aucun rapport avec le niveau fin.
+##
+## Ici les deux niveaux partent de la même hauteur `hs`, quantifiée par blocs.
+## Le champ lointain est dégradé et non binaire : de loin les blocs ne se voient
+## pas, et un champ dégradé se raccorde proprement aux cellules de transition.
 func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 	var size := out_buffer.get_size()
-	var step := float(1 << lod)
+	var step := 1 << lod
+	var stepf := float(step)
+	var columns := {}
+	var caves := {}
+	var sub_depth := PTG.SUB_DEPTH / PTG.VOXEL_SIZE
+
 	for ix in size.x:
-		var vx := float(origin.x + ix) * step
+		var wx := origin.x + ix * step
+		var bx := _block_of(wx)
 		for iz in size.z:
-			var vz := float(origin.z + iz) * step
-			var h := surface_voxels(vx, vz) / step          # en voxels de ce LOD
-			var temperature := temperature_at(vx, vz, surface_voxels(vx, vz))
-			var humidity := humidity_at(vx, vz)
-			var biome: int = PTG.biome_from(temperature, humidity)
-			var surface: int = PTG.surface_material_of(biome)
-			var top := int(floor(h)) - origin.y
+			var wz := origin.z + iz * step
+			var bz := _block_of(wz)
+			var key := Vector2i(bx, bz)
+			var col: Dictionary = columns.get(key, {})
+			if col.is_empty():
+				col = column_data(bx, bz)
+				columns[key] = col
+			var hs := float(col["hs"]) + (1.0 if col["snow"] else 0.0)
+
+			# Indice, dans ce tampon, du dernier voxel sous la surface.
+			var top := int(floor((hs - float(origin.y)) / stepf))
 			if top < 0:
 				continue
-			# Plein bien en dessous de la surface.
 			var solid_top := mini(top - 2, size.y - 1)
 			if solid_top >= 0:
 				out_buffer.fill_area_f(SOLID, Vector3i(ix, 0, iz),
 					Vector3i(ix + 1, solid_top + 1, iz + 1), VoxelBuffer.CHANNEL_SDF)
-			# Dégradé sur les deux voxels qui encadrent la surface.
 			for y in range(maxi(top - 2, 0), mini(top + 2, size.y)):
-				var d := clampf(float(origin.y + y) - h, -1.0, 1.0)
-				out_buffer.set_voxel_f(d, ix, y, iz, VoxelBuffer.CHANNEL_SDF)
+				var wy := float(origin.y + y * step)
+				out_buffer.set_voxel_f(clampf((wy - hs) / stepf, -1.0, 1.0),
+					ix, y, iz, VoxelBuffer.CHANNEL_SDF)
+
+			# Matériaux : roche en profondeur, matière du biome en surface.
 			var hi := Vector3i(ix + 1, mini(top + 1, size.y), iz + 1)
 			if hi.y > 0:
 				out_buffer.fill_area(PTG.MAT_ROCK, Vector3i(ix, 0, iz), hi,
 					VoxelBuffer.CHANNEL_INDICES)
-				var skin := maxi(top - maxi(int(PTG.SUB_DEPTH / PTG.VOXEL_SIZE / step), 1), 0)
-				out_buffer.fill_area(surface, Vector3i(ix, skin, iz), hi,
+				var skin := maxi(top - maxi(int(sub_depth / stepf), 1), 0)
+				out_buffer.fill_area(col["surface"], Vector3i(ix, skin, iz), hi,
 					VoxelBuffer.CHANNEL_INDICES)
+				if col["snow"] and top < size.y:
+					out_buffer.fill_area(PTG.MAT_SNOW, Vector3i(ix, top, iz), hi,
+						VoxelBuffer.CHANNEL_INDICES)
+
+			# Grottes : seulement au premier niveau lointain, où les entrées à
+			# flanc de colline se voient encore.
+			if lod > 1:
+				continue
+			for y in range(0, mini(top, size.y)):
+				var cave_key := Vector3i(bx, _block_of(origin.y + y * step), bz)
+				var carved = caves.get(cave_key)
+				if carved == null:
+					carved = cave_at(cave_key.x, cave_key.y, cave_key.z, float(col["hs"]))
+					caves[cave_key] = carved
+				if carved:
+					out_buffer.set_voxel_f(AIR, ix, y, iz, VoxelBuffer.CHANNEL_SDF)
 
 
 static func _block_of(voxel: int) -> int:
