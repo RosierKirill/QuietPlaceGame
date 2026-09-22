@@ -1,17 +1,23 @@
 shader_type spatial;
 render_mode cull_back;
 
-// GAME-1250 + GAME-1256 + GAME-1212 — Terrain triplanaire TEXTURÉ PAR VOXEL.
-// Les mailles Transvoxel n'ont pas d'UV : on projette les textures en triplanaire
-// depuis la position monde.
+// Terrain triplanaire, TEXTURÉ PAR VOXEL (GAME-1212) et TEINTÉ PAR BIOME.
 //
-// Matériau par voxel (GAME-1212) : le mesher (mode "Single texture") fournit
-// dans CUSTOM1 les 4 indices de matériau du triangle (x, 4 x 8 bits) et leurs
-// poids (y, 4 x 8 bits). Indices : 0 = herbe, 1 = terre, 2 = roche.
-// Règle géométrique conservée EN PLUS : un bloc d'herbe montre l'herbe sur le
-// dessus et la terre sur les flancs (comme un bloc Minecraft).
-// Secours : si le maillage ne porte aucun poids, on retombe sur l'ancien
-// choix par pente / altitude.
+// Les mailles Transvoxel n'ont pas d'UV : on projette les textures en
+// triplanaire depuis la position monde. Le mesher (mode « Single texture »)
+// fournit dans CUSTOM1 les 4 indices de matériau du triangle (x) et leurs
+// poids (y), en 8 bits chacun.
+//
+// Matériaux : 0 herbe, 1 herbe sèche, 2 herbe froide, 3 terre, 4 roche,
+//             5 sable, 6 neige, 7 charbon, 8 fer, 9 cuivre.
+//
+// Comme dans Minecraft, les matières végétales sont désaturées puis teintées :
+// une seule texture d'herbe sert aux trois herbes (tempérée, sèche, froide).
+// Le sable et la neige réutilisent la terre et la roche, teintées elles aussi,
+// en attendant leurs propres textures.
+//
+// Règle géométrique conservée : un bloc d'herbe (ou de neige) montre sa matière
+// sur le dessus et de la terre sur les flancs, comme un bloc Minecraft.
 
 uniform sampler2D grass_tex : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D dirt_tex : source_color, filter_linear_mipmap, repeat_enable;
@@ -20,27 +26,34 @@ uniform sampler2D rock_tex : source_color, filter_linear_mipmap, repeat_enable;
 // Taille des textures en mètres (plus petit = motif plus grand).
 uniform float texture_scale = 0.15;
 
-// Bloc d'herbe : herbe au-dessus, terre sur les flancs (n.y, 1 = plat).
-uniform float grass_side_low = 0.55;
-uniform float grass_side_high = 0.80;
+// Teintes par matériau (voir la liste ci-dessus).
+uniform vec3 tint_grass : source_color = vec3(1.0, 1.0, 1.0);
+uniform vec3 tint_grass_dry : source_color = vec3(0.85, 0.78, 0.42);
+uniform vec3 tint_grass_cold : source_color = vec3(0.52, 0.66, 0.52);
+uniform vec3 tint_sand : source_color = vec3(0.95, 0.87, 0.62);
+uniform vec3 tint_snow : source_color = vec3(0.95, 0.97, 1.0);
+uniform vec3 tint_coal : source_color = vec3(0.24, 0.24, 0.27);
+uniform vec3 tint_iron : source_color = vec3(0.85, 0.66, 0.50);
+uniform vec3 tint_copper : source_color = vec3(0.42, 0.76, 0.62);
 
-// Secours géométrique (maillage sans matériau).
+// Bloc d'herbe / de neige : matière au-dessus, terre sur les flancs (n.y).
+uniform float side_low = 0.55;
+uniform float side_high = 0.80;
+
+// Secours géométrique si le maillage ne porte aucun matériau.
 uniform float rock_to_dirt_low = 0.55;
 uniform float rock_to_dirt_high = 0.72;
 uniform float dirt_to_grass_low = 0.80;
 uniform float dirt_to_grass_high = 0.92;
-uniform float height_rock_start = 120.0;
-uniform float height_rock_end = 170.0;
 
 uniform float terrain_roughness = 0.95;
 
 varying vec3 v_world_pos;
 varying vec3 v_world_normal;
-// Indices identiques sur tout le triangle : pas d'interpolation.
+// Les 4 indices sont constants sur un triangle : pas d'interpolation.
 varying flat vec4 v_indices;
 varying vec4 v_weights;
 
-// Décode un float (bits bruts) en 4 entiers 8 bits.
 vec4 decode_8bit_vec4(float v) {
 	uint i = floatBitsToUint(v);
 	return vec4(
@@ -57,7 +70,7 @@ void vertex() {
 	v_weights = decode_8bit_vec4(CUSTOM1.y) / 255.0;
 }
 
-// Échantillonnage triplanaire d'une texture : 3 plans mélangés par la normale.
+// Échantillonnage triplanaire : 3 plans mélangés par la normale.
 vec3 triplanar(sampler2D tex, vec3 pos, vec3 n) {
 	vec3 w = abs(n);
 	w = w / max(w.x + w.y + w.z, 0.0001);
@@ -67,28 +80,46 @@ vec3 triplanar(sampler2D tex, vec3 pos, vec3 n) {
 	return cx * w.x + cy * w.y + cz * w.z;
 }
 
-// Couleur d'un matériau (indice voxel) à ce fragment.
+// Désature une couleur puis la teinte (principe de Minecraft).
+vec3 tinted(vec3 base, vec3 tint) {
+	float grey = dot(base, vec3(0.299, 0.587, 0.114));
+	return mix(base, vec3(grey), 0.75) * tint;
+}
+
+// Couleur d'un matériau à ce fragment.
 vec3 material_color(float index, vec3 p, vec3 n, float upness) {
-	if (index < 0.5) {
-		vec3 top = triplanar(grass_tex, p, n);
-		vec3 side = triplanar(dirt_tex, p, n);
-		return mix(side, top, smoothstep(grass_side_low, grass_side_high, upness));
-	} else if (index < 1.5) {
-		return triplanar(dirt_tex, p, n);
+	vec3 c_grass = triplanar(grass_tex, p, n);
+	vec3 c_dirt = triplanar(dirt_tex, p, n);
+	vec3 c_rock = triplanar(rock_tex, p, n);
+	float side = smoothstep(side_low, side_high, upness);
+
+	if (index < 0.5) {                       // herbe tempérée
+		return mix(c_dirt, c_grass * tint_grass, side);
+	} else if (index < 1.5) {                // herbe sèche
+		return mix(c_dirt, tinted(c_grass, tint_grass_dry), side);
+	} else if (index < 2.5) {                // herbe froide
+		return mix(c_dirt, tinted(c_grass, tint_grass_cold), side);
+	} else if (index < 3.5) {                // terre
+		return c_dirt;
+	} else if (index < 4.5) {                // roche
+		return c_rock;
+	} else if (index < 5.5) {                // sable
+		return tinted(c_dirt, tint_sand);
+	} else if (index < 6.5) {                // neige
+		return mix(c_rock, tinted(c_rock, tint_snow) * 1.6, side);
+	} else if (index < 7.5) {                // charbon
+		return tinted(c_rock, tint_coal);
+	} else if (index < 8.5) {                // fer
+		return tinted(c_rock, tint_iron);
 	}
-	return triplanar(rock_tex, p, n);
+	return tinted(c_rock, tint_copper);      // cuivre
 }
 
 // Ancien choix purement géométrique (secours).
 vec3 geometric_color(vec3 p, vec3 n, float upness) {
-	vec3 c_grass = triplanar(grass_tex, p, n);
-	vec3 c_dirt = triplanar(dirt_tex, p, n);
-	vec3 c_rock = triplanar(rock_tex, p, n);
-	vec3 col = c_rock;
-	col = mix(col, c_dirt, smoothstep(rock_to_dirt_low, rock_to_dirt_high, upness));
-	col = mix(col, c_grass, smoothstep(dirt_to_grass_low, dirt_to_grass_high, upness));
-	float high = smoothstep(height_rock_start, height_rock_end, v_world_pos.y);
-	return mix(col, c_rock, high);
+	vec3 col = triplanar(rock_tex, p, n);
+	col = mix(col, triplanar(dirt_tex, p, n), smoothstep(rock_to_dirt_low, rock_to_dirt_high, upness));
+	return mix(col, triplanar(grass_tex, p, n), smoothstep(dirt_to_grass_low, dirt_to_grass_high, upness));
 }
 
 void fragment() {

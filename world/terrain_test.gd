@@ -1,28 +1,30 @@
 extends Node3D
 ## Terrain de test — bac à sable de l'Epic E12 · Terrain voxel.
-## Utilise le générateur procédural v1 (GAME-1203) : relief plaines/montagnes
-## + grottes souterraines, graine reproductible. Caméra de survol + ciel bleu.
+## Caméra de survol, sans joueur : sert à juger le relief, les biomes et les
+## grottes d'un coup d'œil. Même générateur et même grille que la scène jouable.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 
-const LOD_COUNT := 4
-const LOD_DISTANCE := 48.0
-const CAMERA_HEIGHT := 90.0
+const LOD_COUNT := 7
+const LOD_DISTANCE := 72.0     # en voxels
+const VIEW_DISTANCE := 1200    # en voxels (= 300 unités)
+const CAMERA_HEIGHT := 120.0   # en unités de monde
 
 func _ready() -> void:
-	print("[terrain_test] _ready — le script tourne bien.")
 	_build_environment()
 	_build_terrain()
-	print("[terrain_test] Terrain construit et ajouté à la scène.")
+	print("[terrain_test] Terrain construit (grille %.2f)." % ProceduralTerrainGenerator.VOXEL_SIZE)
 
 func _build_environment() -> void:
 	var cam := Camera3D.new()
 	cam.name = "TestCamera"
 	cam.position = Vector3(0.0, CAMERA_HEIGHT, 0.0)
 	cam.rotation_degrees = Vector3(-30.0, 0.0, 0.0)
+	cam.far = 2000.0
 	add_child(cam)
 
 	var viewer := VoxelViewer.new()
+	viewer.view_distance = VIEW_DISTANCE
 	cam.add_child(viewer)
 
 	var light := DirectionalLight3D.new()
@@ -56,5 +58,6 @@ func _build_terrain() -> void:
 	terrain.generate_collisions = true
 	terrain.lod_count = LOD_COUNT
 	terrain.lod_distance = LOD_DISTANCE
+	ProceduralTerrainGenerator.apply_scale(terrain)
 	add_child(terrain)
 	terrain.material = TerrainMaterial.build()

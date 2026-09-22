@@ -1,81 +1,131 @@
 extends RefCounted
 class_name ProceduralTerrainGenerator
-## GAME-1203 + GAME-1209 + GAME-1212 — Générateur procédural (Epic E12 · Terrain voxel)
+## Générateur procédural du monde (Epic E12 · Terrain voxel) — version 3.
 ##
-## Relief ART-DIRIGÉ (GAME-1209). Deux courbes de réglage :
+## TROIS IDÉES CLÉS (notes Notion du 22/09/2026) :
 ##
-##   - _make_height_curve() : profil vertical du terrain (bruit normalisé -> hauteur).
-##     Aplatit les vallées, exagère les pics. C'est le réglage de la SILHOUETTE.
-##   - _make_mask_curve()   : combien de terrain est montagneux (masque -> proportion
-##     montagne). Monter cette courbe = MOINS de plaines et des FRONTS plus nets.
+## 1. GRILLE EN BLOCS. Un voxel vaut VOXEL_SIZE (0.25 unité), un bloc vaut
+##    BLOCK_SIZE (0.75 unité = 3 voxels). Le relief est quantifié par paliers
+##    d'un bloc : on obtient des terrasses franches, et le mailleur lisse ne
+##    produit plus que des faces à 0°, 45° et 90° — l'aspect « bloc arrondi »
+##    façon Terraria, sans changer de moteur de rendu.
 ##
-## Étapes :
-##   1. COURBE de remap sur le bruit de base (silhouette).
-##   2. MASQUE plaines/montagnes basse fréquence, re-façonné par _make_mask_curve()
-##      pour des massifs francs (moins de plaine, transitions plus abruptes).
-##   3. Crêtes RIDGED (1 - |bruit|)² dans les zones montagneuses.
-##   4. DOMAIN WARP sur le bruit de base (formes organiques).
+## 2. GROTTES EN COULOIRS + SALLES. L'ancienne formule (une seule bande de
+##    bruit 3D) creusait des NAPPES, d'où l'effet gruyère. Ici deux bandes de
+##    bruit se croisent : leur intersection est un TUBE. Des salles plus larges
+##    s'ouvrent de loin en loin sur ces couloirs, et les minerais apparaissent
+##    en veines sur leurs parois.
 ##
-## MATÉRIAU PAR VOXEL (GAME-1212) : chaque voxel porte un indice de matériau
-## (canal INDICES, mode "Single texture"). Le générateur l'écrit une fois pour
-## toutes, comme un "bloc" Minecraft :
-##   - couche de surface (TOP_LAYER) : herbe, ou terre / roche si la pente est
-##     forte, ou roche au-dessus de ROCK_ALTITUDE ;
-##   - dessous, jusqu'à DIRT_DEPTH : terre (roche si la surface est rocheuse) ;
-##   - plus profond (et donc les grottes) : roche.
-## Creuser ou poser ne change plus la texture : elle suit le bloc, pas la forme.
+## 3. BIOMES PAR TEMPÉRATURE ET HUMIDITÉ. Deux champs de bruit basse fréquence,
+##    la température baissant avec l'altitude, donnent les 7 biomes de la note :
+##    toundra, taïga, forêt tempérée, prairie tempérée, désert, forêt humide,
+##    savane. Le biome choisit le matériau de surface ; le shader teinte la
+##    végétation selon ce matériau.
 ##
-## IMPORTANT : le relief est calculé à l'IDENTIQUE dans build() (graphe) et dans
-## get_height() (GDScript, pour le spawn). Toute modif de l'un va dans l'autre.
-##
-## NB : les Curve étant créées en code, les éditer dans l'inspecteur ne PERSISTE
-## pas — ajuste les points ci-dessous. Convention SDF : négatif = matière.
+## CONVENTIONS
+##   - Le GRAPHE travaille en VOXELS (le terrain est mis à l'échelle VOXEL_SIZE).
+##   - Les constantes ci-dessous sont en UNITÉS DE MONDE, converties au besoin.
+##   - SDF : négatif = matière.
+##   - get_height() renvoie une hauteur en unités de monde et DOIT rester
+##     identique au graphe (elle sert au spawn).
 
 const SEED := 1337
 
-# Relief
-const HEIGHT_FREQUENCY := 0.0016     # taille des grands reliefs
+# --- Grille ---
+const VOXEL_SIZE := 0.25             # taille d'un voxel, en unités de monde
+const BLOCK_SIZE := 0.75             # un bloc = 3 voxels
+const BLOCK_VOXELS := 3
+
+# --- Relief (unités de monde) ---
+const HEIGHT_FREQUENCY := 0.0016
 const HEIGHT_OCTAVES := 4
-const WARP_AMPLITUDE := 40.0         # force du domain warp (formes organiques)
-const BASE_AMPLITUDE := 30.0         # amplitude en plaine (gardée douce)
-const MOUNTAIN_AMPLITUDE := 190.0    # amplitude en montagne (relevée -> pentes raides)
-const MASK_FREQUENCY := 0.0007       # taille des régions plaine/montagne
-const RIDGE_FREQUENCY := 0.010       # finesse des crêtes (relevée -> plus craggy)
-const RIDGE_AMPLITUDE := 55.0        # hauteur des arêtes (relevée)
+const WARP_AMPLITUDE := 40.0
+const BASE_AMPLITUDE := 30.0
+const MOUNTAIN_AMPLITUDE := 190.0
+const MASK_FREQUENCY := 0.0007
+const RIDGE_FREQUENCY := 0.010
+const RIDGE_AMPLITUDE := 55.0
 
-# Grottes
-const CAVE_FREQUENCY := 0.02
-const CAVE_WIDTH := 0.06             # demi-largeur des tunnels
-const CAVE_SMOOTHNESS := 2.0
-const SURFACE_CRUST := 10.0          # épaisseur (m) de sol plein sous la surface
+# --- Grottes (unités de monde) ---
+const CAVE_FREQUENCY := 0.018        # finesse des couloirs
+const CAVE_WIDTH := 0.11            # demi-largeur des bandes croisées
+const ROOM_FREQUENCY := 0.02        # taille des salles
+const ROOM_THRESHOLD := 0.70         # plus haut = salles plus rares
+const CAVE_SMOOTHNESS := 1.5
+const SURFACE_CRUST := 8.0           # épaisseur de sol plein sous la surface
 
-# Matériaux (GAME-1212) — indices écrits dans le canal INDICES.
-const MAT_GRASS := 0
-const MAT_DIRT := 1
-const MAT_ROCK := 2
-const MATERIAL_NAMES := ["herbe", "terre", "roche"]
+# --- Minerais ---
+const ORE_FREQUENCY := 0.05          # taille des veines
+const ORE_TYPE_FREQUENCY := 0.004    # zones à charbon / fer / cuivre
+const ORE_WALL_BAND := 2.0           # distance max à la paroi (unités)
+const ORE_THRESHOLD := 0.55          # plus haut = minerais plus rares
+const ORE_MIN_DEPTH := 10.0
 
-const TOP_LAYER := 1.0               # épaisseur (m) de la couche de surface
-const DIRT_DEPTH := 4.0              # profondeur (m) où commence la roche
-const SLOPE_STEP := 1.0              # pas (m) de la mesure de pente
-const SLOPE_DIRT := 0.75             # pente (tan) au-delà : surface en terre (~37°)
-const SLOPE_ROCK := 1.3              # pente (tan) au-delà : surface rocheuse (~52°)
-const ROCK_ALTITUDE := 135.0         # altitude (m) au-delà : sommets rocheux
-const ROCK_ALTITUDE_JITTER := 20.0   # irrégularité de cette limite (m)
+# --- Biomes ---
+const TEMPERATURE_FREQUENCY := 0.0004
+const HUMIDITY_FREQUENCY := 0.0005
+const COLD_ALTITUDE_START := 60.0    # au-dessus, il commence à faire plus froid
+const COLD_ALTITUDE_RANGE := 300.0   # altitude qui retire 1.0 de température
+
+# --- Couches ---
+const TOP_LAYER := 0.75              # épaisseur de la couche de surface
+const SUB_DEPTH := 4.0               # profondeur où commence la roche
+const ROCK_ALTITUDE := 150.0         # au-delà, sommets rocheux
+
+# --- Matériaux (indice écrit dans le canal INDICES) ---
+const MAT_GRASS := 0                 # herbe tempérée
+const MAT_GRASS_DRY := 1             # herbe sèche (savane, prairie sèche)
+const MAT_GRASS_COLD := 2            # herbe froide (taïga)
+const MAT_DIRT := 3
+const MAT_ROCK := 4
+const MAT_SAND := 5
+const MAT_SNOW := 6
+const MAT_COAL := 7
+const MAT_IRON := 8
+const MAT_COPPER := 9
+const MATERIAL_NAMES := [
+	"herbe", "herbe sèche", "herbe froide", "terre", "roche",
+	"sable", "neige", "charbon", "fer", "cuivre",
+]
+
+# --- Biomes (valeurs de retour de get_biome) ---
+const BIOME_TUNDRA := 0
+const BIOME_TAIGA := 1
+const BIOME_TEMPERATE_FOREST := 2
+const BIOME_TEMPERATE_PRAIRIE := 3
+const BIOME_DESERT := 4
+const BIOME_RAINFOREST := 5
+const BIOME_SAVANNA := 6
+const BIOME_NAMES := [
+	"toundra", "taïga", "forêt tempérée", "prairie tempérée",
+	"désert", "forêt humide", "savane",
+]
+
+# Seuils de la pyramide température × humidité (note Notion).
+const T_TUNDRA := 0.20
+const T_TAIGA := 0.40
+const T_HOT := 0.70
+const H_DESERT := 0.25
+const H_TEMPERATE_FOREST := 0.50
+const H_RAINFOREST := 0.60
 
 
-# --- Ressources de bruit (partagées graphe / GDScript) ------------------------
+# --- Bruits (partagés graphe / GDScript) --------------------------------------
+# Les fréquences sont données en unités de monde puis converties en voxels.
+
+static func _freq(world_frequency: float) -> float:
+	return world_frequency * VOXEL_SIZE
 
 static func _make_height_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = SEED
-	n.frequency = HEIGHT_FREQUENCY
+	n.frequency = _freq(HEIGHT_FREQUENCY)
 	n.fractal_type = FastNoiseLite.FRACTAL_FBM
 	n.fractal_octaves = HEIGHT_OCTAVES
 	n.domain_warp_enabled = true
 	n.domain_warp_type = FastNoiseLite.DOMAIN_WARP_SIMPLEX
-	n.domain_warp_amplitude = WARP_AMPLITUDE
+	n.domain_warp_amplitude = WARP_AMPLITUDE / VOXEL_SIZE
 	n.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
 	return n
 
@@ -83,7 +133,7 @@ static func _make_mask_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = SEED + 2
-	n.frequency = MASK_FREQUENCY
+	n.frequency = _freq(MASK_FREQUENCY)
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
@@ -91,9 +141,58 @@ static func _make_ridge_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = SEED + 3
-	n.frequency = RIDGE_FREQUENCY
+	n.frequency = _freq(RIDGE_FREQUENCY)
 	n.fractal_type = FastNoiseLite.FRACTAL_FBM
 	n.fractal_octaves = 3
+	return n
+
+static func _make_temperature_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 10
+	n.frequency = _freq(TEMPERATURE_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
+static func _make_humidity_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 11
+	n.frequency = _freq(HUMIDITY_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
+static func _make_cave_noise(index: int) -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 20 + index
+	n.frequency = _freq(CAVE_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_FBM
+	n.fractal_octaves = 1
+	return n
+
+static func _make_room_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 30
+	n.frequency = _freq(ROOM_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
+static func _make_ore_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 40
+	n.frequency = _freq(ORE_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
+static func _make_ore_type_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.seed = SEED + 41
+	n.frequency = _freq(ORE_TYPE_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
 ## Silhouette du terrain : X = bruit normalisé 0..1, Y = profil de hauteur.
@@ -102,23 +201,22 @@ static func _make_height_curve() -> Curve:
 	c.min_value = 0.0
 	c.max_value = 1.0
 	c.add_point(Vector2(0.0, 0.0))
-	c.add_point(Vector2(0.45, 0.10))   # large fond de vallée quasi plat
-	c.add_point(Vector2(0.65, 0.26))   # contreforts vallonnés
-	c.add_point(Vector2(0.82, 0.58))   # accélération
-	c.add_point(Vector2(1.0, 1.0))     # pics
+	c.add_point(Vector2(0.45, 0.10))
+	c.add_point(Vector2(0.65, 0.26))
+	c.add_point(Vector2(0.82, 0.58))
+	c.add_point(Vector2(1.0, 1.0))
 	c.bake()
 	return c
 
 ## Répartition montagne : X = masque brut 0..1, Y = proportion de montagne.
-## Montée franche -> moins de plaines et des fronts de montagne plus abrupts.
 static func _make_mask_curve() -> Curve:
 	var c := Curve.new()
 	c.min_value = 0.0
 	c.max_value = 1.0
 	c.add_point(Vector2(0.0, 0.0))
-	c.add_point(Vector2(0.30, 0.06))   # vraies basses terres (minoritaires)
-	c.add_point(Vector2(0.45, 0.45))   # bascule rapide
-	c.add_point(Vector2(0.60, 0.90))   # majoritairement montagneux au-dessus
+	c.add_point(Vector2(0.30, 0.06))
+	c.add_point(Vector2(0.45, 0.45))
+	c.add_point(Vector2(0.60, 0.90))
 	c.add_point(Vector2(1.0, 1.0))
 	c.bake()
 	return c
@@ -130,130 +228,102 @@ static func _make_mask_curve() -> Curve:
 static func make_mesher() -> VoxelMesherTransvoxel:
 	var m := VoxelMesherTransvoxel.new()
 	m.texturing_mode = VoxelMesherTransvoxel.TEXTURES_SINGLE_S4
-	# Seuls les voxels pleins décident de la texture : l'air ne "déteint" pas.
 	m.textures_ignore_air_voxels = true
 	return m
 
-## Format des voxels : le mode "Single texture" exige un canal INDICES 8 bits.
+## Format des voxels : le mode « Single texture » exige un canal INDICES 8 bits.
 static func make_format() -> VoxelFormat:
 	var f := VoxelFormat.new()
 	f.set_channel_depth(VoxelBuffer.CHANNEL_INDICES, VoxelBuffer.DEPTH_8_BIT)
 	return f
 
+## Applique l'échelle de la grille : 1 voxel = VOXEL_SIZE unité de monde.
+static func apply_scale(terrain: VoxelLodTerrain) -> void:
+	terrain.scale = Vector3.ONE * VOXEL_SIZE
 
-# --- Calcul de hauteur (partagé) ----------------------------------------------
+## Monde -> voxels (coordonnées locales du terrain).
+static func to_voxel(world_position: Vector3) -> Vector3:
+	return world_position / VOXEL_SIZE
 
-## Hauteur du sol au point (x,z), en mètres. DOIT rester identique au graphe.
+## Voxels -> monde.
+static func to_world(voxel_position: Vector3) -> Vector3:
+	return voxel_position * VOXEL_SIZE
+
+
+# --- Calculs partagés (mêmes formules que le graphe) --------------------------
+
+static func _noise01(n: FastNoiseLite, x: float, z: float) -> float:
+	return clampf(n.get_noise_2d(x, z) * 0.5 + 0.5, 0.0, 1.0)
+
+## Hauteur du sol au point (x,z) EN UNITÉS DE MONDE, quantifiée par blocs.
 static func get_height(x: float, z: float) -> float:
-	var height_noise := _make_height_noise()
-	var mask_noise := _make_mask_noise()
-	var ridge_noise := _make_ridge_noise()
-	var height_curve := _make_height_curve()
-	var mask_curve := _make_mask_curve()
+	var vx := x / VOXEL_SIZE
+	var vz := z / VOXEL_SIZE
 
-	var base: float = height_noise.get_noise_2d(x, z)              # ~[-1,1]
-	var t: float = clampf(base * 0.5 + 0.5, 0.0, 1.0)             # [0,1]
-	var profile: float = height_curve.sample_baked(t)            # [0,1]
+	var profile := _make_height_curve().sample_baked(_noise01(_make_height_noise(), vx, vz))
+	var mask := _make_mask_curve().sample_baked(_noise01(_make_mask_noise(), vx, vz))
+	var amp := BASE_AMPLITUDE + mask * MOUNTAIN_AMPLITUDE
 
-	var mask_raw: float = clampf(mask_noise.get_noise_2d(x, z) * 0.5 + 0.5, 0.0, 1.0)
-	var mask: float = mask_curve.sample_baked(mask_raw)          # [0,1] proportion montagne
-	var amp: float = BASE_AMPLITUDE + mask * MOUNTAIN_AMPLITUDE
+	var ridge := 1.0 - absf(_make_ridge_noise().get_noise_2d(vx, vz))
+	var ridge_h := ridge * ridge * RIDGE_AMPLITUDE * mask
 
-	var ridge: float = 1.0 - absf(ridge_noise.get_noise_2d(x, z))  # [0,1]
-	var ridge_h: float = ridge * ridge * RIDGE_AMPLITUDE * mask
+	return snappedf(profile * amp + ridge_h, BLOCK_SIZE)
 
-	return profile * amp + ridge_h
+## Température [0,1] au point (x,z) : bruit basse fréquence, corrigé par l'altitude.
+static func get_temperature(x: float, z: float) -> float:
+	var base := _noise01(_make_temperature_noise(), x / VOXEL_SIZE, z / VOXEL_SIZE)
+	var altitude := maxf(get_height(x, z) - COLD_ALTITUDE_START, 0.0)
+	return clampf(base - altitude / COLD_ALTITUDE_RANGE, 0.0, 1.0)
+
+## Humidité [0,1] au point (x,z).
+static func get_humidity(x: float, z: float) -> float:
+	return _noise01(_make_humidity_noise(), x / VOXEL_SIZE, z / VOXEL_SIZE)
+
+## Biome au point (x,z) — voir BIOME_NAMES. Sert aussi à la faune et à la flore.
+static func get_biome(x: float, z: float) -> int:
+	return biome_from(get_temperature(x, z), get_humidity(x, z))
+
+## Biome à partir des deux taux (pyramide de la note Notion).
+static func biome_from(temperature: float, humidity: float) -> int:
+	if temperature < T_TUNDRA:
+		return BIOME_TUNDRA
+	if temperature < T_TAIGA:
+		return BIOME_TAIGA
+	if temperature < T_HOT:
+		if humidity < H_DESERT:
+			return BIOME_DESERT
+		if humidity < H_TEMPERATE_FOREST:
+			return BIOME_TEMPERATE_PRAIRIE
+		return BIOME_TEMPERATE_FOREST
+	if humidity < H_DESERT:
+		return BIOME_DESERT
+	if humidity < H_RAINFOREST:
+		return BIOME_SAVANNA
+	return BIOME_RAINFOREST
+
+## Matériau de surface d'un biome.
+static func surface_material_of(biome: int) -> int:
+	match biome:
+		BIOME_TUNDRA:
+			return MAT_SNOW
+		BIOME_TAIGA:
+			return MAT_GRASS_COLD
+		BIOME_DESERT:
+			return MAT_SAND
+		BIOME_SAVANNA, BIOME_TEMPERATE_PRAIRIE:
+			return MAT_GRASS_DRY
+		_:
+			return MAT_GRASS
 
 
-# --- Construction du graphe voxel ---------------------------------------------
+# --- Construction du graphe ---------------------------------------------------
 
-## Sous-graphe de hauteur (identique à get_height) à partir de deux entrées X/Z.
-## Instancié 3 fois : au point, puis décalé en X et en Z pour mesurer la pente.
-## Retourne {"height": id du noeud hauteur, "base": id du bruit de base}.
-static func _add_height_subgraph(g: VoxelGraphFunction, x_src: int, z_src: int, oy: float) -> Dictionary:
-	var T := VoxelGraphFunction
+static func _constant(g: VoxelGraphFunction, value: float, pos: Vector2) -> int:
+	var n := g.create_node(VoxelGraphFunction.NODE_CONSTANT, pos)
+	g.set_node_param(n, 0, value)
+	return n
 
-	# 1) Bruit de base -> normalisé 0..1 -> courbe silhouette.
-	var n_base := g.create_node(T.NODE_NOISE_2D, Vector2(240, oy + 0))
-	g.set_node_param(n_base, 0, _make_height_noise())
-	g.add_connection(x_src, 0, n_base, 0)
-	g.add_connection(z_src, 0, n_base, 1)
-
-	var n_base_half := g.create_node(T.NODE_MULTIPLY, Vector2(440, oy + 0))
-	g.add_connection(n_base, 0, n_base_half, 0)
-	g.set_node_default_input(n_base_half, 1, 0.5)
-
-	var n_t := g.create_node(T.NODE_ADD, Vector2(620, oy + 0))
-	g.add_connection(n_base_half, 0, n_t, 0)
-	g.set_node_default_input(n_t, 1, 0.5)
-
-	var n_profile := g.create_node(T.NODE_CURVE, Vector2(800, oy + 0))
-	g.set_node_param(n_profile, 0, _make_height_curve())
-	g.add_connection(n_t, 0, n_profile, 0)
-
-	# 2) Masque plaines/montagnes -> courbe de masque -> amplitude locale.
-	var n_mask := g.create_node(T.NODE_NOISE_2D, Vector2(240, oy + 220))
-	g.set_node_param(n_mask, 0, _make_mask_noise())
-	g.add_connection(x_src, 0, n_mask, 0)
-	g.add_connection(z_src, 0, n_mask, 1)
-
-	var n_mask_half := g.create_node(T.NODE_MULTIPLY, Vector2(440, oy + 220))
-	g.add_connection(n_mask, 0, n_mask_half, 0)
-	g.set_node_default_input(n_mask_half, 1, 0.5)
-
-	var n_mask01 := g.create_node(T.NODE_ADD, Vector2(620, oy + 220))
-	g.add_connection(n_mask_half, 0, n_mask01, 0)
-	g.set_node_default_input(n_mask01, 1, 0.5)
-
-	var n_mask_c := g.create_node(T.NODE_CURVE, Vector2(800, oy + 220))
-	g.set_node_param(n_mask_c, 0, _make_mask_curve())
-	g.add_connection(n_mask01, 0, n_mask_c, 0)
-
-	var n_mtn := g.create_node(T.NODE_MULTIPLY, Vector2(980, oy + 220))
-	g.add_connection(n_mask_c, 0, n_mtn, 0)
-	g.set_node_default_input(n_mtn, 1, MOUNTAIN_AMPLITUDE)
-
-	var n_amp := g.create_node(T.NODE_ADD, Vector2(1160, oy + 220))
-	g.add_connection(n_mtn, 0, n_amp, 0)
-	g.set_node_default_input(n_amp, 1, BASE_AMPLITUDE)
-
-	var n_height_a := g.create_node(T.NODE_MULTIPLY, Vector2(1360, oy + 60))
-	g.add_connection(n_profile, 0, n_height_a, 0)
-	g.add_connection(n_amp, 0, n_height_a, 1)
-
-	# 3) Crêtes ridged : (1 - |bruit|)² * RIDGE_AMPLITUDE * masque façonné.
-	var n_ridge := g.create_node(T.NODE_NOISE_2D, Vector2(240, oy + 460))
-	g.set_node_param(n_ridge, 0, _make_ridge_noise())
-	g.add_connection(x_src, 0, n_ridge, 0)
-	g.add_connection(z_src, 0, n_ridge, 1)
-
-	var n_ridge_abs := g.create_node(T.NODE_ABS, Vector2(440, oy + 460))
-	g.add_connection(n_ridge, 0, n_ridge_abs, 0)
-
-	var n_ridge_inv := g.create_node(T.NODE_SUBTRACT, Vector2(620, oy + 460))
-	g.set_node_default_input(n_ridge_inv, 0, 1.0)
-	g.add_connection(n_ridge_abs, 0, n_ridge_inv, 1)
-
-	var n_ridge_sq := g.create_node(T.NODE_MULTIPLY, Vector2(800, oy + 460))
-	g.add_connection(n_ridge_inv, 0, n_ridge_sq, 0)
-	g.add_connection(n_ridge_inv, 0, n_ridge_sq, 1)
-
-	var n_ridge_amp := g.create_node(T.NODE_MULTIPLY, Vector2(980, oy + 460))
-	g.add_connection(n_ridge_sq, 0, n_ridge_amp, 0)
-	g.set_node_default_input(n_ridge_amp, 1, RIDGE_AMPLITUDE)
-
-	var n_ridge_masked := g.create_node(T.NODE_MULTIPLY, Vector2(1160, oy + 460))
-	g.add_connection(n_ridge_amp, 0, n_ridge_masked, 0)
-	g.add_connection(n_mask_c, 0, n_ridge_masked, 1)
-
-	# height = height_a + ridge_masked
-	var n_height := g.create_node(T.NODE_ADD, Vector2(1560, oy + 200))
-	g.add_connection(n_height_a, 0, n_height, 0)
-	g.add_connection(n_ridge_masked, 0, n_height, 1)
-
-	return {"height": n_height, "base": n_base}
-
-## Noeud Select : t < seuil -> a, sinon b.
+## Select : t < seuil -> a, sinon b.
 static func _select(g: VoxelGraphFunction, a: int, b: int, t: int, threshold: float, pos: Vector2) -> int:
 	var n := g.create_node(VoxelGraphFunction.NODE_SELECT, pos)
 	g.add_connection(a, 0, n, 0)
@@ -262,9 +332,34 @@ static func _select(g: VoxelGraphFunction, a: int, b: int, t: int, threshold: fl
 	g.set_node_param(n, 0, threshold)
 	return n
 
-static func _constant(g: VoxelGraphFunction, value: float, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_CONSTANT, pos)
-	g.set_node_param(n, 0, value)
+## Expression mathématique avec des entrées nommées.
+static func _expr(g: VoxelGraphFunction, expression: String, inputs: Array, sources: Array, pos: Vector2) -> int:
+	var n := g.create_node(VoxelGraphFunction.NODE_EXPRESSION, pos)
+	g.set_node_param(n, 0, expression)
+	g.set_expression_node_inputs(n, PackedStringArray(inputs))
+	for i in sources.size():
+		g.add_connection(int(sources[i]), 0, n, i)
+	return n
+
+static func _noise_2d(g: VoxelGraphFunction, noise: FastNoiseLite, x: int, z: int, pos: Vector2) -> int:
+	var n := g.create_node(VoxelGraphFunction.NODE_NOISE_2D, pos)
+	g.set_node_param(n, 0, noise)
+	g.add_connection(x, 0, n, 0)
+	g.add_connection(z, 0, n, 1)
+	return n
+
+static func _noise_3d(g: VoxelGraphFunction, noise: FastNoiseLite, x: int, y: int, z: int, pos: Vector2) -> int:
+	var n := g.create_node(VoxelGraphFunction.NODE_NOISE_3D, pos)
+	g.set_node_param(n, 0, noise)
+	g.add_connection(x, 0, n, 0)
+	g.add_connection(y, 0, n, 1)
+	g.add_connection(z, 0, n, 2)
+	return n
+
+static func _curve(g: VoxelGraphFunction, curve: Curve, src: int, pos: Vector2) -> int:
+	var n := g.create_node(VoxelGraphFunction.NODE_CURVE, pos)
+	g.set_node_param(n, 0, curve)
+	g.add_connection(src, 0, n, 0)
 	return n
 
 static func build() -> VoxelGeneratorGraph:
@@ -274,108 +369,137 @@ static func build() -> VoxelGeneratorGraph:
 	var g := graph.get_main_function()
 	var T := VoxelGraphFunction
 
+	var vs := VOXEL_SIZE                 # unité de monde par voxel
+	var amp_base := BASE_AMPLITUDE / vs
+	var amp_mtn := MOUNTAIN_AMPLITUDE / vs
+	var amp_ridge := RIDGE_AMPLITUDE / vs
+
 	var in_x := g.create_node(T.NODE_INPUT_X, Vector2(0, 0))
 	var in_y := g.create_node(T.NODE_INPUT_Y, Vector2(0, 200))
 	var in_z := g.create_node(T.NODE_INPUT_Z, Vector2(0, 400))
 
-	var h0 := _add_height_subgraph(g, in_x, in_z, 0.0)
-	var n_height: int = h0["height"]
+	# --- 1. Relief, quantifié par blocs ---
+	var n_base := _noise_2d(g, _make_height_noise(), in_x, in_z, Vector2(240, 0))
+	var n_t := _expr(g, "n * 0.5 + 0.5", ["n"], [n_base], Vector2(440, 0))
+	var n_profile := _curve(g, _make_height_curve(), n_t, Vector2(640, 0))
 
-	# sdf_terrain = Y - height
-	var n_terrain := g.create_node(T.NODE_SUBTRACT, Vector2(1760, 200))
-	g.add_connection(in_y, 0, n_terrain, 0)
-	g.add_connection(n_height, 0, n_terrain, 1)
+	var n_mask_raw := _noise_2d(g, _make_mask_noise(), in_x, in_z, Vector2(240, 200))
+	var n_mask_t := _expr(g, "n * 0.5 + 0.5", ["n"], [n_mask_raw], Vector2(440, 200))
+	var n_mask := _curve(g, _make_mask_curve(), n_mask_t, Vector2(640, 200))
 
-	# --- Grottes spaghetti (inchangé GAME-1203) ---
-	var cave_noise := FastNoiseLite.new()
-	cave_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	cave_noise.seed = SEED + 1
-	cave_noise.frequency = CAVE_FREQUENCY
+	var n_ridge_raw := _noise_2d(g, _make_ridge_noise(), in_x, in_z, Vector2(240, 400))
 
-	var n_cave := g.create_node(T.NODE_NOISE_3D, Vector2(240, 720))
-	g.set_node_param(n_cave, 0, cave_noise)
-	g.add_connection(in_x, 0, n_cave, 0)
-	g.add_connection(in_y, 0, n_cave, 1)
-	g.add_connection(in_z, 0, n_cave, 2)
+	var n_height_c := _expr(g,
+		"p * %f + p * m * %f + (1.0 - abs(r)) * (1.0 - abs(r)) * %f * m" % [amp_base, amp_mtn, amp_ridge],
+		["p", "m", "r"], [n_profile, n_mask, n_ridge_raw], Vector2(900, 100))
 
-	var n_abs := g.create_node(T.NODE_ABS, Vector2(460, 720))
-	g.add_connection(n_cave, 0, n_abs, 0)
+	# Terrasses : la hauteur est arrondie au bloc le plus proche.
+	var n_height := g.create_node(T.NODE_STEPIFY, Vector2(1100, 100))
+	g.add_connection(n_height_c, 0, n_height, 0)
+	g.set_node_default_input(n_height, 1, float(BLOCK_VOXELS))
 
-	var n_cave_b := g.create_node(T.NODE_SUBTRACT, Vector2(680, 720))
-	g.add_connection(n_abs, 0, n_cave_b, 0)
-	g.set_node_default_input(n_cave_b, 1, CAVE_WIDTH)
+	var n_terrain := _expr(g, "y - h", ["y", "h"], [in_y, n_height], Vector2(1300, 100))
 
-	var n_guard := g.create_node(T.NODE_ADD, Vector2(1960, 320))
-	g.add_connection(n_terrain, 0, n_guard, 0)
-	g.set_node_default_input(n_guard, 1, SURFACE_CRUST)
+	# --- 2. Grottes : deux bandes croisées (couloirs) + salles ---
+	var n_cave_a := _noise_3d(g, _make_cave_noise(0), in_x, in_y, in_z, Vector2(240, 700))
+	var n_cave_b := _noise_3d(g, _make_cave_noise(1), in_x, in_y, in_z, Vector2(240, 900))
+	var n_room := _noise_3d(g, _make_room_noise(), in_x, in_y, in_z, Vector2(240, 1100))
 
-	var n_gated := g.create_node(T.NODE_MAX, Vector2(2160, 520))
-	g.add_connection(n_cave_b, 0, n_gated, 0)
-	g.add_connection(n_guard, 0, n_gated, 1)
+	# Les valeurs de bruit ne sont pas des distances : on les convertit en voxels
+	# (un bruit de fréquence f varie d'environ 2.5 * f par voxel).
+	var cave_scale := 1.0 / (2.5 * _freq(CAVE_FREQUENCY))
+	var room_scale := 1.0 / (2.5 * _freq(ROOM_FREQUENCY))
 
-	var n_final := g.create_node(T.NODE_SDF_SMOOTH_SUBTRACT, Vector2(2360, 260))
-	g.set_node_param(n_final, 0, CAVE_SMOOTHNESS)
+	# Couloirs : négatif seulement là où LES DEUX bandes sont proches de zéro.
+	var n_tunnels := _expr(g, "max(abs(a) - %f, abs(b) - %f) * %f" % [
+			CAVE_WIDTH, CAVE_WIDTH, cave_scale],
+		["a", "b"], [n_cave_a, n_cave_b], Vector2(520, 800))
+	# Salles : négatif dans les bulles de bruit les plus fortes.
+	var n_rooms := _expr(g, "(%f - r) * %f" % [ROOM_THRESHOLD, room_scale],
+		["r"], [n_room], Vector2(520, 1100))
+	var n_caves := _expr(g, "min(t, s)", ["t", "s"], [n_tunnels, n_rooms], Vector2(760, 950))
+
+	# Croûte : rien n'est creusé trop près de la surface.
+	var n_guard := _expr(g, "d + %f" % (SURFACE_CRUST / vs), ["d"], [n_terrain], Vector2(760, 700))
+	var n_gated := _expr(g, "max(c, g)", ["c", "g"], [n_caves, n_guard], Vector2(1000, 800))
+
+	var n_final := g.create_node(T.NODE_SDF_SMOOTH_SUBTRACT, Vector2(1500, 300))
+	g.set_node_param(n_final, 0, CAVE_SMOOTHNESS / vs)
 	g.add_connection(n_terrain, 0, n_final, 0)
 	g.add_connection(n_gated, 0, n_final, 1)
 
-	var out := g.create_node(T.NODE_OUTPUT_SDF, Vector2(2560, 260))
-	g.add_connection(n_final, 0, out, 0)
+	var out_sdf := g.create_node(T.NODE_OUTPUT_SDF, Vector2(1750, 300))
+	g.add_connection(n_final, 0, out_sdf, 0)
 
-	# --- Matériau par voxel (GAME-1212) ---
-	# Pente : hauteur mesurée un pas plus loin en X et en Z.
-	var x_step := g.create_node(T.NODE_ADD, Vector2(0, 1100))
-	g.add_connection(in_x, 0, x_step, 0)
-	g.set_node_default_input(x_step, 1, SLOPE_STEP)
-	var z_step := g.create_node(T.NODE_ADD, Vector2(0, 1900))
-	g.add_connection(in_z, 0, z_step, 0)
-	g.set_node_default_input(z_step, 1, SLOPE_STEP)
+	# --- 3. Biomes : température (avec altitude) et humidité ---
+	var n_temp_raw := _noise_2d(g, _make_temperature_noise(), in_x, in_z, Vector2(240, 1400))
+	var n_hum_raw := _noise_2d(g, _make_humidity_noise(), in_x, in_z, Vector2(240, 1600))
 
-	var hx: int = _add_height_subgraph(g, x_step, in_z, 1100.0)["height"]
-	var hz: int = _add_height_subgraph(g, in_x, z_step, 1900.0)["height"]
+	var n_temp := _expr(g,
+		"clamp(t * 0.5 + 0.5 - max(h * %f - %f, 0.0) / %f, 0.0, 1.0)" % [
+			vs, COLD_ALTITUDE_START, COLD_ALTITUDE_RANGE],
+		["t", "h"], [n_temp_raw, n_height], Vector2(520, 1400))
+	var n_hum := _expr(g, "h * 0.5 + 0.5", ["h"], [n_hum_raw], Vector2(520, 1600))
 
-	# |gradient| = distance((hx, hz), (h, h)) / pas  -> tangente de la pente.
-	var n_grad := g.create_node(T.NODE_DISTANCE_2D, Vector2(1800, 1500))
-	g.add_connection(hx, 0, n_grad, 0)
-	g.add_connection(hz, 0, n_grad, 1)
-	g.add_connection(n_height, 0, n_grad, 2)
-	g.add_connection(n_height, 0, n_grad, 3)
-	var n_slope := g.create_node(T.NODE_MULTIPLY, Vector2(2000, 1500))
-	g.add_connection(n_grad, 0, n_slope, 0)
-	g.set_node_default_input(n_slope, 1, 1.0 / SLOPE_STEP)
+	# --- 4. Matériaux ---
+	var c_grass := _constant(g, MAT_GRASS, Vector2(760, 1300))
+	var c_grass_dry := _constant(g, MAT_GRASS_DRY, Vector2(760, 1350))
+	var c_grass_cold := _constant(g, MAT_GRASS_COLD, Vector2(760, 1400))
+	var c_dirt := _constant(g, MAT_DIRT, Vector2(760, 1450))
+	var c_rock := _constant(g, MAT_ROCK, Vector2(760, 1500))
+	var c_sand := _constant(g, MAT_SAND, Vector2(760, 1550))
+	var c_snow := _constant(g, MAT_SNOW, Vector2(760, 1600))
+	var c_coal := _constant(g, MAT_COAL, Vector2(760, 1650))
+	var c_iron := _constant(g, MAT_IRON, Vector2(760, 1700))
+	var c_copper := _constant(g, MAT_COPPER, Vector2(760, 1750))
 
-	# Altitude "bruitée" pour une limite des sommets rocheux moins rectiligne.
-	var n_jit := g.create_node(T.NODE_MULTIPLY, Vector2(2000, 1300))
-	g.add_connection(h0["base"], 0, n_jit, 0)
-	g.set_node_default_input(n_jit, 1, ROCK_ALTITUDE_JITTER)
-	var n_alt := g.create_node(T.NODE_SUBTRACT, Vector2(2200, 1300))
-	g.add_connection(in_y, 0, n_alt, 0)
-	g.add_connection(n_jit, 0, n_alt, 1)
+	# Surface chaude : désert / savane / forêt humide.
+	var hot_a := _select(g, c_sand, c_grass_dry, n_hum, H_DESERT, Vector2(1000, 1500))
+	var hot := _select(g, hot_a, c_grass, n_hum, H_RAINFOREST, Vector2(1180, 1500))
+	# Surface tempérée : désert / prairie / forêt.
+	var temperate_a := _select(g, c_sand, c_grass_dry, n_hum, H_DESERT, Vector2(1000, 1650))
+	var temperate := _select(g, temperate_a, c_grass, n_hum, H_TEMPERATE_FOREST, Vector2(1180, 1650))
+	# Froid : toundra (neige) puis taïga (herbe froide).
+	var cold := _select(g, c_snow, c_grass_cold, n_temp, T_TUNDRA, Vector2(1180, 1350))
 
-	# Profondeur sous la surface analytique : d = height - Y.
-	var n_depth := g.create_node(T.NODE_SUBTRACT, Vector2(2000, 1700))
-	g.add_connection(n_height, 0, n_depth, 0)
-	g.add_connection(in_y, 0, n_depth, 1)
+	var surface_a := _select(g, cold, temperate, n_temp, T_TAIGA, Vector2(1360, 1500))
+	var surface_b := _select(g, surface_a, hot, n_temp, T_HOT, Vector2(1540, 1500))
+	# Sommets rocheux (sauf s'il fait assez froid pour la neige : déjà géré).
+	var surface := _select(g, surface_b, c_rock, n_height,
+		(ROCK_ALTITUDE / vs), Vector2(1720, 1500))
 
-	var c_grass := _constant(g, MAT_GRASS, Vector2(2200, 1000))
-	var c_dirt := _constant(g, MAT_DIRT, Vector2(2200, 1060))
-	var c_rock := _constant(g, MAT_ROCK, Vector2(2200, 1120))
+	# Sous-couche : sable sous le sable, terre sous le reste.
+	var sub := _select(g, c_dirt, c_sand, surface, float(MAT_SAND) - 0.5, Vector2(1900, 1650))
+	var sub_or_sand := _select(g, sub, c_dirt, surface, float(MAT_SAND) + 0.5, Vector2(2080, 1650))
 
-	# Matériau de surface : herbe -> terre (pente) -> roche (falaise / sommet).
-	var top_a := _select(g, c_grass, c_dirt, n_slope, SLOPE_DIRT, Vector2(2400, 1400))
-	var top_b := _select(g, top_a, c_rock, n_slope, SLOPE_ROCK, Vector2(2600, 1400))
-	var top := _select(g, top_b, c_rock, n_alt, ROCK_ALTITUDE, Vector2(2800, 1400))
-	# Sous-couche : terre sous l'herbe/la terre, roche sous la roche.
-	var sub := _select(g, c_dirt, c_rock, top, 1.5, Vector2(3000, 1500))
-	var deep := _select(g, sub, c_rock, n_depth, DIRT_DEPTH, Vector2(3200, 1600))
-	var mat := _select(g, top, deep, n_depth, TOP_LAYER, Vector2(3400, 1500))
+	# Profondeur sous la surface, en voxels.
+	var n_depth := _expr(g, "h - y", ["h", "y"], [n_height, in_y], Vector2(1300, 1800))
 
-	var out_tex := g.create_node(T.NODE_OUTPUT_SINGLE_TEXTURE, Vector2(3600, 1500))
-	g.add_connection(mat, 0, out_tex, 0)
+	# Minerais : proches d'une paroi de grotte, assez profonds, dans une veine.
+	var n_wallness := _expr(g, "1.0 - min(abs(c) / %f, 1.0)" % (ORE_WALL_BAND / vs),
+		["c"], [n_gated], Vector2(1300, 1950))
+	var n_ore_noise := _noise_3d(g, _make_ore_noise(), in_x, in_y, in_z, Vector2(240, 1950))
+	var n_ore_score := _expr(g, "(n * 0.5 + 0.5) * w * min(d / %f, 1.0)" % (ORE_MIN_DEPTH / vs),
+		["n", "w", "d"], [n_ore_noise, n_wallness, n_depth], Vector2(1540, 1950))
+	var n_ore_type := _noise_3d(g, _make_ore_type_noise(), in_x, in_y, in_z, Vector2(240, 2150))
+	var n_ore_type01 := _expr(g, "n * 0.5 + 0.5", ["n"], [n_ore_type], Vector2(520, 2150))
+
+	var ore_a := _select(g, c_coal, c_iron, n_ore_type01, 0.4, Vector2(1000, 2150))
+	var ore := _select(g, ore_a, c_copper, n_ore_type01, 0.62, Vector2(1180, 2150))
+	var deep := _select(g, c_rock, ore, n_ore_score, ORE_THRESHOLD, Vector2(1900, 2050))
+
+	# Empilement final : surface / sous-couche / profondeur.
+	var layered_a := _select(g, sub_or_sand, deep, n_depth, SUB_DEPTH / vs, Vector2(2260, 1800))
+	var material := _select(g, surface, layered_a, n_depth, TOP_LAYER / vs, Vector2(2440, 1700))
+
+	var out_tex := g.create_node(T.NODE_OUTPUT_SINGLE_TEXTURE, Vector2(2640, 1700))
+	g.add_connection(material, 0, out_tex, 0)
 
 	var result := graph.compile()
 	if typeof(result) == TYPE_DICTIONARY and result.has("success") and not result["success"]:
 		push_error("[terrain] Échec compilation du graphe : %s (noeud %s)" % [
 			result.get("message", ""), str(result.get("node_id", -1))])
 	else:
-		print("[terrain] Graphe procédural compilé avec succès.")
+		print("[terrain] Graphe procédural v3 compilé (grille %.2f, blocs %.2f)." % [
+			VOXEL_SIZE, BLOCK_SIZE])
 	return graph

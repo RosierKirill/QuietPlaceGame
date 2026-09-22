@@ -1,44 +1,38 @@
 extends Node3D
-## GAME-1204 + GAME-1205 — Terrain généré marchable + édition à la visée
-## (bac à sable Epic E12).
+## Bac à sable du terrain voxel (Epic E12) — grille en blocs, biomes, grottes.
 ##
-##   - Collision réelle (collision_lod_count = 1), spawn qui ATTEND que la
-##     collision du chunk soit prête avant de rendre le joueur physique
-##     (GAME-1210) ; le filet de sécurité anti-chute ne sert plus que de
-##     secours pour les tout premiers instants.
-##   - ÉDITION : clic gauche = creuser, clic droit = ajouter de la matière
-##     (VoxelTool sur le canal SDF). Permet d'explorer/creuser les grottes.
-##     Après un ajout, le joueur est dépénétré si jamais il se retrouve dans
-##     la matière fraîchement posée (GAME-1211 — vrai fix, pas seulement une
-##     distance minimale).
-##   - MATÉRIAU PAR VOXEL (GAME-1212) : creuser "ramasse" le matériau du bloc
-##     visé (herbe / terre / roche) ; poser remet CE matériau. La texture suit
-##     le bloc, plus la forme du terrain.
+##   - Le terrain est à l'échelle de la grille : 1 voxel = 0.25 unité, 1 bloc
+##     = 0.75 unité. Les coordonnées du VoxelTool sont donc LOCALES (voxels),
+##     jamais celles du monde : on convertit avec ProceduralTerrainGenerator.
+##   - SPAWN : le joueur reste hors-physique tant que la collision du chunk
+##     sous lui n'est pas prête (GAME-1210). Le filet anti-chute ne sert que de
+##     secours (GAME-1204), et une dépénétration remonte le joueur s'il se
+##     retrouve dans la matière (GAME-1211).
+##   - CONSTRUCTION : clic gauche = casser le bloc visé (on ramasse son
+##     matériau), clic droit = poser un bloc du matériau en main, aligné sur la
+##     grille. Touches 1 à 9 : choisir la matière à poser.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 const TerrainEditing := preload("res://world/terrain_editing.gd")
 const PlayerScene := preload("res://player/player.tscn")
 
-const LOD_COUNT := 4
-const LOD_DISTANCE := 48.0
-const VIEW_DISTANCE := 256
+const LOD_COUNT := 7
+const LOD_DISTANCE := 72.0     # en voxels
+const VIEW_DISTANCE := 800     # en voxels (= 200 unités)
 const COLLISION_LOD_COUNT := 1
 const SPAWN_LIFT := 3.0
 const DROP_MARGIN := 0.2
-const SCAN_TOP := 300.0
-const SCAN_BOTTOM := -300.0
-const SPAWN_TIMEOUT := 8.0
-const FALL_LIMIT := -90.0
+const SCAN_TOP := 400.0
+const SCAN_BOTTOM := -400.0
+const SPAWN_TIMEOUT := 12.0
+const FALL_LIMIT := -120.0
 
-const EDIT_DISTANCE := 8.0   # portée du creusement (m)
-const EDIT_RADIUS := 2.5     # rayon de la boule creusée/ajoutée (m)
+const EDIT_DISTANCE := 6.0     # portée de construction, en unités de monde
 
-# GAME-1211 — dépénétration après un ajout de matière : on sonde le volume du
-# joueur (pieds/bassin/tête) et on le remonte tant qu'un point est "dans" la
-# matière (SDF < 0), jusqu'à une limite de sécurité.
+# Dépénétration (GAME-1211) : sondes sur la hauteur du joueur.
 const DEPEN_SAMPLE_HEIGHTS := [0.1, 0.9, 1.7]
 const DEPEN_STEP := 0.15
-const DEPEN_MAX_STEPS := 40  # 6 m de remontée max
+const DEPEN_MAX_STEPS := 40
 
 var _player: CharacterBody3D
 var _camera: Camera3D
@@ -48,14 +42,14 @@ var _grounded := false
 var _elapsed := 0.0
 var _reported := false
 var _report_time := 0.0
-## Matériau "en main" : celui du dernier bloc creusé (terre au départ).
+## Matériau en main : celui du dernier bloc cassé (terre au départ).
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
 
 func _ready() -> void:
 	_build_environment()
 	_build_terrain()
 	_spawn_player()
-	print("[terrain] Édition : clic gauche = creuser (ramasse le matériau), clic droit = poser le matériau ramassé.")
+	print("[terrain] Construction : clic gauche = casser, clic droit = poser, touches 1-9 = matière.")
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _grounded or _camera == null or _voxel_tool == null:
@@ -64,33 +58,37 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_edit(true)
+			_break_block()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
-			_edit(false)
+			_place_block()
+	elif event is InputEventKey and event.pressed and not event.echo:
+		var slot: int = event.keycode - KEY_1
+		if slot >= 0 and slot < ProceduralTerrainGenerator.MATERIAL_NAMES.size():
+			_held_material = slot
+			print("[terrain] Matière en main : %s" % _material_name(slot))
 
-func _edit(dig: bool) -> void:
-	var origin := _camera.global_position
+## Bloc visé par la caméra. Renvoie null si rien à portée.
+func _aim() -> VoxelRaycastResult:
+	var origin: Vector3 = ProceduralTerrainGenerator.to_voxel(_camera.global_position)
 	var dir := -_camera.global_transform.basis.z
-	var hit := _voxel_tool.raycast(origin, dir, EDIT_DISTANCE)
+	var reach: float = EDIT_DISTANCE / ProceduralTerrainGenerator.VOXEL_SIZE
+	return _voxel_tool.raycast(origin, dir, reach)
+
+func _break_block() -> void:
+	var hit := _aim()
 	if hit == null:
 		return
-	var center: Vector3 = Vector3(hit.position if dig else hit.previous_position)
-	if not dig:
-		# Garde-fou UX : évite de se murer instantanément à bout portant.
-		var head := _player.global_position + Vector3.UP * 0.9
-		if center.distance_to(head) < EDIT_RADIUS + 1.2:
-			return
-	if dig:
-		# GAME-1212 — on garde en main le matériau du bloc creusé.
-		var picked := TerrainEditing.dig(_voxel_tool, hit.position, center, EDIT_RADIUS)
-		if picked != _held_material:
-			_held_material = picked
-			print("[terrain] Matériau en main : %s" % _material_name(_held_material))
-	else:
-		# GAME-1212 — la matière posée porte le matériau en main.
-		TerrainEditing.add(_voxel_tool, center, EDIT_RADIUS, _held_material)
-		# GAME-1211 — vrai fix : que le garde-fou ci-dessus ait suffi ou non,
-		# on vérifie l'état réel des voxels et on dépénètre si besoin.
+	var picked := TerrainEditing.break_block(_voxel_tool, hit.position)
+	if picked >= 0 and picked != _held_material:
+		_held_material = picked
+		print("[terrain] Matière en main : %s" % _material_name(picked))
+
+func _place_block() -> void:
+	var hit := _aim()
+	if hit == null:
+		return
+	if TerrainEditing.place_block(_voxel_tool, hit.previous_position, _held_material):
+		# GAME-1211 : si le bloc posé enferme le joueur, on le remonte.
 		_depenetrate_player()
 
 func _material_name(index: int) -> String:
@@ -99,10 +97,12 @@ func _material_name(index: int) -> String:
 		return names[index]
 	return "matériau %d" % index
 
-func _is_solid_at(pos: Vector3) -> bool:
+func _is_solid_at(world_position: Vector3) -> bool:
 	if _voxel_tool == null:
 		return false
-	return _voxel_tool.get_voxel_f_interpolated(pos) < 0.0
+	_voxel_tool.channel = VoxelBuffer.CHANNEL_SDF
+	return _voxel_tool.get_voxel_f_interpolated(
+		ProceduralTerrainGenerator.to_voxel(world_position)) < 0.0
 
 func _player_is_stuck() -> bool:
 	var base := _player.global_position
@@ -121,29 +121,29 @@ func _depenetrate_player() -> void:
 	if steps > 0:
 		_player.velocity = Vector3.ZERO
 		if steps >= DEPEN_MAX_STEPS:
-			push_warning("[terrain_player] Dépénétration : limite atteinte, le joueur est peut-être encore coincé.")
+			push_warning("[terrain_player] Dépénétration : limite atteinte.")
 
 func _physics_process(delta: float) -> void:
 	if _grounded:
 		var p0 := _player.global_position
-		# GAME-1204 fix, secours GAME-1210 : la croute (SURFACE_CRUST) est
-		# toujours pleine ; s'y trouver sans toucher le sol = on a traversé.
-		# Ce filet ne sert plus qu'aux tout premiers instants — le spawn
-		# normal attend déjà que la collision soit prête (cf. _settle_step).
+		# Secours : la croûte sous la surface est toujours pleine ; s'y trouver
+		# sans toucher le sol veut dire qu'on est passé au travers.
 		var surf := ProceduralTerrainGenerator.get_height(p0.x, p0.z)
 		if not _player.is_on_floor() and _player.velocity.y < 0.0 \
 				and p0.y < surf - 3.0 and p0.y > surf - (ProceduralTerrainGenerator.SURFACE_CRUST - 1.0):
 			_begin_settle()
 			return
-		if _player.global_position.y < FALL_LIMIT:
+		if p0.y < FALL_LIMIT:
 			_begin_settle()
 			return
 		if not _reported:
 			_report_time += delta
 			if _report_time >= 1.0:
 				_reported = true
-				print("[terrain_player] DIAG 1s : is_on_floor=%s, y=%.1f" % [
-					str(_player.is_on_floor()), _player.global_position.y])
+				var biome: int = ProceduralTerrainGenerator.get_biome(p0.x, p0.z)
+				print("[terrain_player] DIAG 1s : au sol=%s, y=%.1f, biome=%s" % [
+					str(_player.is_on_floor()), p0.y,
+					ProceduralTerrainGenerator.BIOME_NAMES[biome]])
 		return
 	_settle_step(delta)
 
@@ -162,11 +162,8 @@ func _begin_settle() -> void:
 	push_warning("[terrain_player] Rattrapage anti-chute : le joueur était passé sous le terrain.")
 
 func _settle_step(delta: float) -> void:
-	# GAME-1210 — le joueur reste hors-physique (flottant, invisible pour la
-	# marche) tant que la collision du chunk sous lui n'est pas confirmée par
-	# ce raycast. On ne le rend "au sol" qu'une fois une collision réelle
-	# trouvée : ce n'est donc pas "spawner puis rattraper" mais "attendre
-	# avant de lâcher".
+	# GAME-1210 : on attend que la collision existe vraiment sous le joueur
+	# avant de lui rendre la physique. Rien ne tombe pendant ce temps.
 	_elapsed += delta
 	var p := _player.global_position
 	var space := get_world_3d().direct_space_state
@@ -209,6 +206,7 @@ func _build_terrain() -> void:
 	_terrain.collision_lod_count = COLLISION_LOD_COUNT
 	_terrain.lod_count = LOD_COUNT
 	_terrain.lod_distance = LOD_DISTANCE
+	ProceduralTerrainGenerator.apply_scale(_terrain)
 	add_child(_terrain)
 	_terrain.material = TerrainMaterial.build()
 	_voxel_tool = _terrain.get_voxel_tool()
