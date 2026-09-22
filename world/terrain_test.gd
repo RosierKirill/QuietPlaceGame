@@ -56,3 +56,4 @@ func _build_terrain() -> void:
 	terrain.lod_count = LOD_COUNT
 	terrain.lod_distance = LOD_DISTANCE
 	add_child(terrain)
+	terrain.material = TerrainMaterial.build()

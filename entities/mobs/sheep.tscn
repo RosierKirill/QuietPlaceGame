@@ -1,18 +1,17 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=13 format=3 uid="uid://bn32urnb0vwn6"]
 
 [ext_resource type="Script" path="res://entities/mobs/mob.gd" id="1_mob"]
 [ext_resource type="Script" path="res://systems/combat/health.gd" id="2_health"]
 [ext_resource type="Script" path="res://systems/combat/hurtbox.gd" id="3_hurtbox"]
 [ext_resource type="Script" path="res://systems/ai/state_machine.gd" id="4_state_machine"]
-[ext_resource type="Script" path="res://systems/loot/loot_table.gd" id="8_loot"]
-[ext_resource type="Resource" path="res://items/meat.tres" id="9_meat"]
 [ext_resource type="Script" path="res://entities/mobs/states/mob_idle_state.gd" id="5_idle"]
 [ext_resource type="Script" path="res://entities/mobs/states/mob_wander_state.gd" id="6_wander"]
 [ext_resource type="Script" path="res://entities/mobs/states/mob_flee_state.gd" id="7_flee"]
+[ext_resource type="Script" path="res://systems/loot/loot_table.gd" id="8_loot"]
+[ext_resource type="Resource" path="res://items/meat.tres" id="9_meat"]
 
 [sub_resource type="StandardMaterial3D" id="Material_sheep"]
 albedo_color = Color(0.9, 0.89, 0.85, 1)
-roughness = 1.0
 
 [sub_resource type="CapsuleMesh" id="Mesh_sheep"]
 material = SubResource("Material_sheep")
@@ -42,8 +41,6 @@ shape = SubResource("Shape_sheep")
 [node name="LootTable" type="Node" parent="."]
 script = ExtResource("8_loot")
 item = ExtResource("9_meat")
-minimum = 1
-maximum = 3
 
 [node name="Health" type="Node" parent="."]
 script = ExtResource("2_health")
@@ -65,19 +62,15 @@ target_desired_distance = 0.8
 
 [node name="StateMachine" type="Node" parent="."]
 script = ExtResource("4_state_machine")
-initial_state = &"Idle"
 
 [node name="Idle" type="Node" parent="StateMachine"]
 script = ExtResource("5_idle")
 alert_state = &"Flee"
-next_state = &"Wander"
 
 [node name="Wander" type="Node" parent="StateMachine"]
 script = ExtResource("6_wander")
 wander_radius = 5.0
 alert_state = &"Flee"
-next_state = &"Idle"
 
 [node name="Flee" type="Node" parent="StateMachine"]
 script = ExtResource("7_flee")
-calm_state = &"Idle"
