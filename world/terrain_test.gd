@@ -50,7 +50,8 @@ func _build_environment() -> void:
 func _build_terrain() -> void:
 	var terrain := VoxelLodTerrain.new()
 	terrain.name = "VoxelLodTerrain"
-	terrain.mesher = VoxelMesherTransvoxel.new()
+	terrain.mesher = ProceduralTerrainGenerator.make_mesher()
+	terrain.format = ProceduralTerrainGenerator.make_format()
 	terrain.generator = ProceduralTerrainGenerator.build()
 	terrain.generate_collisions = true
 	terrain.lod_count = LOD_COUNT

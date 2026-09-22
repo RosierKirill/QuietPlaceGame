@@ -11,8 +11,12 @@ extends Node3D
 ##     Après un ajout, le joueur est dépénétré si jamais il se retrouve dans
 ##     la matière fraîchement posée (GAME-1211 — vrai fix, pas seulement une
 ##     distance minimale).
+##   - MATÉRIAU PAR VOXEL (GAME-1212) : creuser "ramasse" le matériau du bloc
+##     visé (herbe / terre / roche) ; poser remet CE matériau. La texture suit
+##     le bloc, plus la forme du terrain.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
+const TerrainEditing := preload("res://world/terrain_editing.gd")
 const PlayerScene := preload("res://player/player.tscn")
 
 const LOD_COUNT := 4
@@ -44,12 +48,14 @@ var _grounded := false
 var _elapsed := 0.0
 var _reported := false
 var _report_time := 0.0
+## Matériau "en main" : celui du dernier bloc creusé (terre au départ).
+var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
 
 func _ready() -> void:
 	_build_environment()
 	_build_terrain()
 	_spawn_player()
-	print("[terrain] Édition : clic gauche = creuser, clic droit = ajouter de la matière.")
+	print("[terrain] Édition : clic gauche = creuser (ramasse le matériau), clic droit = poser le matériau ramassé.")
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _grounded or _camera == null or _voxel_tool == null:
@@ -74,12 +80,24 @@ func _edit(dig: bool) -> void:
 		var head := _player.global_position + Vector3.UP * 0.9
 		if center.distance_to(head) < EDIT_RADIUS + 1.2:
 			return
-	_voxel_tool.mode = VoxelTool.MODE_REMOVE if dig else VoxelTool.MODE_ADD
-	_voxel_tool.do_sphere(center, EDIT_RADIUS)
-	if not dig:
+	if dig:
+		# GAME-1212 — on garde en main le matériau du bloc creusé.
+		var picked := TerrainEditing.dig(_voxel_tool, hit.position, center, EDIT_RADIUS)
+		if picked != _held_material:
+			_held_material = picked
+			print("[terrain] Matériau en main : %s" % _material_name(_held_material))
+	else:
+		# GAME-1212 — la matière posée porte le matériau en main.
+		TerrainEditing.add(_voxel_tool, center, EDIT_RADIUS, _held_material)
 		# GAME-1211 — vrai fix : que le garde-fou ci-dessus ait suffi ou non,
 		# on vérifie l'état réel des voxels et on dépénètre si besoin.
 		_depenetrate_player()
+
+func _material_name(index: int) -> String:
+	var names: Array = ProceduralTerrainGenerator.MATERIAL_NAMES
+	if index >= 0 and index < names.size():
+		return names[index]
+	return "matériau %d" % index
 
 func _is_solid_at(pos: Vector3) -> bool:
 	if _voxel_tool == null:
@@ -184,7 +202,8 @@ func _spawn_player() -> void:
 func _build_terrain() -> void:
 	_terrain = VoxelLodTerrain.new()
 	_terrain.name = "VoxelLodTerrain"
-	_terrain.mesher = VoxelMesherTransvoxel.new()
+	_terrain.mesher = ProceduralTerrainGenerator.make_mesher()
+	_terrain.format = ProceduralTerrainGenerator.make_format()
 	_terrain.generator = ProceduralTerrainGenerator.build()
 	_terrain.generate_collisions = true
 	_terrain.collision_lod_count = COLLISION_LOD_COUNT
