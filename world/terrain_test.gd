@@ -17,7 +17,9 @@ func _ready() -> void:
 		ProceduralTerrainGenerator.set_world_seed(FIXED_SEED)
 	else:
 		ProceduralTerrainGenerator.randomize_world_seed()
-	print("[terrain_test] Graine du monde : %d" % ProceduralTerrainGenerator.world_seed)
+	print("[terrain_test] Graine %d — seuils : %s" % [
+		ProceduralTerrainGenerator.world_seed,
+		ProceduralTerrainGenerator.biome_thresholds_text()])
 	_build_environment()
 	_build_terrain()
 	print("[terrain_test] Terrain construit (grille %.2f)." % ProceduralTerrainGenerator.VOXEL_SIZE)

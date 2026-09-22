@@ -37,14 +37,18 @@ static func block_material(tool: VoxelTool, voxel_position: Vector3i) -> int:
 	tool.channel = VoxelBuffer.CHANNEL_SDF
 	return material
 
-## La zone est-elle chargée ? Hors de la zone chargée, les écritures seraient
-## perdues en silence : mieux vaut le dire.
-static func can_edit(tool: VoxelTool, voxel_position: Vector3i) -> bool:
+## La zone est-elle chargée ? Sert aussi à savoir si le spawn peut se faire.
+static func can_edit_quiet(tool: VoxelTool, voxel_position: Vector3i) -> bool:
 	var origin := block_origin(voxel_position)
 	var box := AABB(Vector3(origin) - Vector3.ONE, Vector3.ONE * (PTG.BLOCK_VOXELS + 2))
-	if tool.is_area_editable(box):
+	return tool.is_area_editable(box)
+
+## Même chose, mais prévient : hors zone chargée, une écriture serait perdue
+## en silence.
+static func can_edit(tool: VoxelTool, voxel_position: Vector3i) -> bool:
+	if can_edit_quiet(tool, voxel_position):
 		return true
-	push_warning("[terrain] Zone pas encore chargée : édition ignorée en %s." % str(origin))
+	push_warning("[terrain] Zone pas encore chargée : édition ignorée en %s." % str(block_origin(voxel_position)))
 	return false
 
 ## Casse le bloc contenant cette position. Renvoie le matériau ramassé, ou -1

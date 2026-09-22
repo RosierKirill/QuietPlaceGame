@@ -16,8 +16,8 @@ render_mode cull_back;
 // Le sable et la neige ont maintenant leur propre texture ; les minerais sont
 // la roche, teintée.
 //
-// Règle géométrique conservée : un bloc d'herbe (ou de neige) montre sa matière
-// sur le dessus et de la terre sur les flancs, comme un bloc Minecraft.
+// Chaque matière s'affiche sur TOUTES les faces du bloc : l'herbe peut pousser
+// sur le côté d'un bloc, ce n'est plus réservé au dessus.
 
 uniform sampler2D grass_tex : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D dirt_tex : source_color, filter_linear_mipmap, repeat_enable;
@@ -35,10 +35,6 @@ uniform vec3 tint_grass_cold : source_color = vec3(0.52, 0.66, 0.52);
 uniform vec3 tint_coal : source_color = vec3(0.24, 0.24, 0.27);
 uniform vec3 tint_iron : source_color = vec3(0.85, 0.66, 0.50);
 uniform vec3 tint_copper : source_color = vec3(0.42, 0.76, 0.62);
-
-// Bloc d'herbe / de neige : matière au-dessus, terre sur les flancs (n.y).
-uniform float side_low = 0.55;
-uniform float side_high = 0.80;
 
 // Secours géométrique si le maillage ne porte aucun matériau.
 uniform float rock_to_dirt_low = 0.55;
@@ -87,18 +83,17 @@ vec3 tinted(vec3 base, vec3 tint) {
 }
 
 // Couleur d'un matériau à ce fragment.
-vec3 material_color(float index, vec3 p, vec3 n, float upness) {
+vec3 material_color(float index, vec3 p, vec3 n) {
 	vec3 c_grass = triplanar(grass_tex, p, n);
 	vec3 c_dirt = triplanar(dirt_tex, p, n);
 	vec3 c_rock = triplanar(rock_tex, p, n);
-	float side = smoothstep(side_low, side_high, upness);
 
 	if (index < 0.5) {                       // herbe tempérée
-		return mix(c_dirt, c_grass * tint_grass, side);
+		return c_grass * tint_grass;
 	} else if (index < 1.5) {                // herbe sèche
-		return mix(c_dirt, tinted(c_grass, tint_grass_dry), side);
+		return tinted(c_grass, tint_grass_dry);
 	} else if (index < 2.5) {                // herbe froide
-		return mix(c_dirt, tinted(c_grass, tint_grass_cold), side);
+		return tinted(c_grass, tint_grass_cold);
 	} else if (index < 3.5) {                // terre
 		return c_dirt;
 	} else if (index < 4.5) {                // roche
@@ -106,7 +101,7 @@ vec3 material_color(float index, vec3 p, vec3 n, float upness) {
 	} else if (index < 5.5) {                // sable
 		return triplanar(sand_tex, p, n);
 	} else if (index < 6.5) {                // neige
-		return mix(c_rock, triplanar(snow_tex, p, n), side);
+		return triplanar(snow_tex, p, n);
 	} else if (index < 7.5) {                // charbon
 		return tinted(c_rock, tint_coal);
 	} else if (index < 8.5) {                // fer
@@ -132,7 +127,7 @@ void fragment() {
 	for (int i = 0; i < 4; i++) {
 		float w = v_weights[i];
 		if (w > 0.001) {
-			col += material_color(v_indices[i], p, n, upness) * w;
+			col += material_color(v_indices[i], p, n) * w;
 			total += w;
 		}
 	}

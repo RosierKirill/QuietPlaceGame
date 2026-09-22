@@ -108,12 +108,22 @@ const BIOME_NAMES := [
 ]
 
 # Seuils de la pyramide température × humidité (note Notion).
-const T_TUNDRA := 0.20
-const T_TAIGA := 0.40
-const T_HOT := 0.70
-const H_DESERT := 0.25
-const H_TEMPERATE_FOREST := 0.50
-const H_RAINFOREST := 0.60
+# Ils ne sont PAS constants : chaque graine tire les siens dans ces plages, donc
+# un monde peut être très désertique et un autre très froid. Les plages
+# ci-dessous sont les seules valeurs réglées à la main — à ajuster librement.
+const RANGE_T_TUNDRA := Vector2(0.10, 0.28)      # fin de la toundra
+const RANGE_T_TAIGA := Vector2(0.10, 0.26)       # largeur de la taïga
+const RANGE_T_HOT := Vector2(0.20, 0.38)         # largeur des terres tempérées
+const RANGE_H_DESERT := Vector2(0.14, 0.36)      # fin du désert
+const RANGE_H_FOREST := Vector2(0.14, 0.30)      # largeur des prairies
+const RANGE_H_RAIN := Vector2(0.05, 0.20)        # largeur de la savane
+
+static var t_tundra := 0.20
+static var t_taiga := 0.40
+static var t_hot := 0.70
+static var h_desert := 0.25
+static var h_forest := 0.50
+static var h_rain := 0.60
 
 
 # --- Graine (GAME-1219) -------------------------------------------------------
@@ -121,13 +131,31 @@ const H_RAINFOREST := 0.60
 ## Fixe la graine du monde. À appeler avant build() et avant tout get_height().
 static func set_world_seed(value: int) -> void:
 	world_seed = value
+	_roll_biome_thresholds()
 
 ## Tire une graine au hasard, la fixe, et la renvoie (pour l'afficher/sauver).
 static func randomize_world_seed() -> int:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	world_seed = int(rng.randi() % 1000000)
+	_roll_biome_thresholds()
 	return world_seed
+
+## Tire les seuils de biome de cette graine : chaque monde a ses proportions.
+static func _roll_biome_thresholds() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = world_seed * 31 + 7
+	t_tundra = rng.randf_range(RANGE_T_TUNDRA.x, RANGE_T_TUNDRA.y)
+	t_taiga = t_tundra + rng.randf_range(RANGE_T_TAIGA.x, RANGE_T_TAIGA.y)
+	t_hot = minf(t_taiga + rng.randf_range(RANGE_T_HOT.x, RANGE_T_HOT.y), 0.95)
+	h_desert = rng.randf_range(RANGE_H_DESERT.x, RANGE_H_DESERT.y)
+	h_forest = h_desert + rng.randf_range(RANGE_H_FOREST.x, RANGE_H_FOREST.y)
+	h_rain = minf(h_forest + rng.randf_range(RANGE_H_RAIN.x, RANGE_H_RAIN.y), 0.95)
+
+## Résumé lisible des seuils de ce monde (console, écran de chargement).
+static func biome_thresholds_text() -> String:
+	return "toundra<%.2f, taïga<%.2f, chaud>%.2f | désert<%.2f, prairie<%.2f, savane<%.2f" % [
+		t_tundra, t_taiga, t_hot, h_desert, h_forest, h_rain]
 
 
 # --- Bruits (partagés graphe / GDScript) --------------------------------------
@@ -305,19 +333,19 @@ static func get_biome(x: float, z: float) -> int:
 
 ## Biome à partir des deux taux (pyramide de la note Notion).
 static func biome_from(temperature: float, humidity: float) -> int:
-	if temperature < T_TUNDRA:
+	if temperature < t_tundra:
 		return BIOME_TUNDRA
-	if temperature < T_TAIGA:
+	if temperature < t_taiga:
 		return BIOME_TAIGA
-	if temperature < T_HOT:
-		if humidity < H_DESERT:
+	if temperature < t_hot:
+		if humidity < h_desert:
 			return BIOME_DESERT
-		if humidity < H_TEMPERATE_FOREST:
+		if humidity < h_forest:
 			return BIOME_TEMPERATE_PRAIRIE
 		return BIOME_TEMPERATE_FOREST
-	if humidity < H_DESERT:
+	if humidity < h_desert:
 		return BIOME_DESERT
-	if humidity < H_RAINFOREST:
+	if humidity < h_rain:
 		return BIOME_SAVANNA
 	return BIOME_RAINFOREST
 
@@ -505,16 +533,16 @@ static func build() -> VoxelGeneratorGraph:
 	var c_copper := _constant(g, MAT_COPPER, Vector2(760, 1750))
 
 	# Surface chaude : désert / savane / forêt humide.
-	var hot_a := _select(g, c_sand, c_grass_dry, n_hum, H_DESERT, Vector2(1000, 1500))
-	var hot := _select(g, hot_a, c_grass, n_hum, H_RAINFOREST, Vector2(1180, 1500))
+	var hot_a := _select(g, c_sand, c_grass_dry, n_hum, h_desert, Vector2(1000, 1500))
+	var hot := _select(g, hot_a, c_grass, n_hum, h_rain, Vector2(1180, 1500))
 	# Surface tempérée : désert / prairie / forêt.
-	var temperate_a := _select(g, c_sand, c_grass_dry, n_hum, H_DESERT, Vector2(1000, 1650))
-	var temperate := _select(g, temperate_a, c_grass, n_hum, H_TEMPERATE_FOREST, Vector2(1180, 1650))
+	var temperate_a := _select(g, c_sand, c_grass_dry, n_hum, h_desert, Vector2(1000, 1650))
+	var temperate := _select(g, temperate_a, c_grass, n_hum, h_forest, Vector2(1180, 1650))
 	# Froid : toundra (neige) puis taïga (herbe froide).
-	var cold := _select(g, c_snow, c_grass_cold, n_temp, T_TUNDRA, Vector2(1180, 1350))
+	var cold := _select(g, c_snow, c_grass_cold, n_temp, t_tundra, Vector2(1180, 1350))
 
-	var biome_a := _select(g, cold, temperate, n_temp, T_TAIGA, Vector2(1360, 1500))
-	var biome_mat := _select(g, biome_a, hot, n_temp, T_HOT, Vector2(1540, 1500))
+	var biome_a := _select(g, cold, temperate, n_temp, t_taiga, Vector2(1360, 1500))
+	var biome_mat := _select(g, biome_a, hot, n_temp, t_hot, Vector2(1540, 1500))
 
 	# La PENTE prime sur le biome : l'herbe ne tient pas sur un versant raide.
 	# Sous l'herbe il y a de la terre, sous le sable ou la neige de la roche.
@@ -566,6 +594,6 @@ static func build() -> VoxelGeneratorGraph:
 		push_error("[terrain] Échec compilation du graphe : %s (noeud %s)" % [
 			result.get("message", ""), str(result.get("node_id", -1))])
 	else:
-		print("[terrain] Graphe procédural v3 compilé (grille %.2f, blocs %.2f)." % [
-			VOXEL_SIZE, BLOCK_SIZE])
+		print("[terrain] Graphe compilé — graine %d, seuils : %s" % [
+			world_seed, biome_thresholds_text()])
 	return graph

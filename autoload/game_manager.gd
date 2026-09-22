@@ -10,7 +10,7 @@ extends Node
 signal pause_changed(is_paused: bool)
 
 const MAIN_MENU_SCENE: String = "res://ui/main_menu.tscn"
-const GAME_SCENE: String = "res://world/demo.tscn"
+const GAME_SCENE: String = "res://world/terrain_player_test.tscn"
 
 
 ## Démarre une partie neuve. La sauvegarde existante est effacée.

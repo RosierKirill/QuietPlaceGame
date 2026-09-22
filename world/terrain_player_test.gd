@@ -18,6 +18,7 @@ extends Node3D
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 const TerrainEditing := preload("res://world/terrain_editing.gd")
 const PlayerScene := preload("res://player/player.tscn")
+const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
 
 const LOD_COUNT := 7
 const LOD_DISTANCE := 72.0     # en voxels
@@ -55,6 +56,7 @@ var _report_time := 0.0
 ## Matériau en main : celui du dernier bloc cassé (terre au départ).
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
 var _grace_left := 0.0
+var _loading: CanvasLayer
 
 func _ready() -> void:
 	if FIXED_SEED >= 0:
@@ -62,6 +64,10 @@ func _ready() -> void:
 	else:
 		ProceduralTerrainGenerator.randomize_world_seed()
 	print("[terrain] Graine du monde : %d" % ProceduralTerrainGenerator.world_seed)
+	_loading = LoadingScreenScene.instantiate()
+	add_child(_loading)
+	_loading.show_seed(ProceduralTerrainGenerator.world_seed)
+	_loading.set_status("Génération du terrain…")
 	_build_environment()
 	_build_terrain()
 	_spawn_player()
@@ -191,12 +197,27 @@ func _settle_step(delta: float) -> void:
 		Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
 		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
 	query.exclude = [_player.get_rid()]
+	_update_loading(surf)
 	var hit := space.intersect_ray(query)
 	if hit:
 		_drop_player(float(hit.position.y) + DROP_MARGIN)
 	elif _elapsed >= SPAWN_TIMEOUT:
 		push_warning("[terrain_player] Collision toujours absente : pose sur la hauteur calculée.")
 		_drop_player(surf + DROP_MARGIN)
+
+## Avancement affiché : les voxels d'abord, la collision ensuite.
+func _update_loading(surf: float) -> void:
+	if _loading == null or not is_instance_valid(_loading):
+		return
+	# La barre avance déjà avec le temps, pour ne jamais paraître figée.
+	_loading.set_progress(minf(_elapsed / SPAWN_TIMEOUT, 0.85) * 0.5)
+	var spawn_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(
+		Vector3(_player.global_position.x, surf, _player.global_position.z)))
+	if TerrainEditing.can_edit_quiet(_voxel_tool, spawn_voxel):
+		_loading.set_progress(0.7)
+		_loading.set_status("Mise en place de la collision…")
+	else:
+		_loading.set_status("Génération du terrain…")
 
 func _drop_player(y: float) -> void:
 	_grounded = true
@@ -207,6 +228,8 @@ func _drop_player(y: float) -> void:
 	_player.set_physics_process(true)
 	# Au cas où la collision le coince dans un versant, on le dégage tout de suite.
 	_depenetrate_player()
+	if _loading != null and is_instance_valid(_loading):
+		_loading.finish()
 	print("[terrain_player] Joueur posé au sol à y=%.1f (biome %s)" % [
 		_player.global_position.y,
 		ProceduralTerrainGenerator.BIOME_NAMES[ProceduralTerrainGenerator.get_biome(p.x, p.z)]])
