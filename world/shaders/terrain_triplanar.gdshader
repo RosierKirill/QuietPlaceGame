@@ -13,8 +13,8 @@ render_mode cull_back;
 //
 // Comme dans Minecraft, les matières végétales sont désaturées puis teintées :
 // une seule texture d'herbe sert aux trois herbes (tempérée, sèche, froide).
-// Le sable et la neige réutilisent la terre et la roche, teintées elles aussi,
-// en attendant leurs propres textures.
+// Le sable et la neige ont maintenant leur propre texture ; les minerais sont
+// la roche, teintée.
 //
 // Règle géométrique conservée : un bloc d'herbe (ou de neige) montre sa matière
 // sur le dessus et de la terre sur les flancs, comme un bloc Minecraft.
@@ -22,6 +22,8 @@ render_mode cull_back;
 uniform sampler2D grass_tex : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D dirt_tex : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D rock_tex : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D sand_tex : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D snow_tex : source_color, filter_linear_mipmap, repeat_enable;
 
 // Taille des textures en mètres (plus petit = motif plus grand).
 uniform float texture_scale = 0.15;
@@ -30,8 +32,6 @@ uniform float texture_scale = 0.15;
 uniform vec3 tint_grass : source_color = vec3(1.0, 1.0, 1.0);
 uniform vec3 tint_grass_dry : source_color = vec3(0.85, 0.78, 0.42);
 uniform vec3 tint_grass_cold : source_color = vec3(0.52, 0.66, 0.52);
-uniform vec3 tint_sand : source_color = vec3(0.95, 0.87, 0.62);
-uniform vec3 tint_snow : source_color = vec3(0.95, 0.97, 1.0);
 uniform vec3 tint_coal : source_color = vec3(0.24, 0.24, 0.27);
 uniform vec3 tint_iron : source_color = vec3(0.85, 0.66, 0.50);
 uniform vec3 tint_copper : source_color = vec3(0.42, 0.76, 0.62);
@@ -104,9 +104,9 @@ vec3 material_color(float index, vec3 p, vec3 n, float upness) {
 	} else if (index < 4.5) {                // roche
 		return c_rock;
 	} else if (index < 5.5) {                // sable
-		return tinted(c_dirt, tint_sand);
+		return triplanar(sand_tex, p, n);
 	} else if (index < 6.5) {                // neige
-		return mix(c_rock, tinted(c_rock, tint_snow) * 1.6, side);
+		return mix(c_rock, triplanar(snow_tex, p, n), side);
 	} else if (index < 7.5) {                // charbon
 		return tinted(c_rock, tint_coal);
 	} else if (index < 8.5) {                // fer

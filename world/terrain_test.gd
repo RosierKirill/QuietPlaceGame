@@ -9,8 +9,15 @@ const LOD_COUNT := 7
 const LOD_DISTANCE := 72.0     # en voxels
 const VIEW_DISTANCE := 1200    # en voxels (= 300 unités)
 const CAMERA_HEIGHT := 120.0   # en unités de monde
+## Graine fixe pour rejouer un monde ; -1 = graine tirée au hasard.
+const FIXED_SEED := -1
 
 func _ready() -> void:
+	if FIXED_SEED >= 0:
+		ProceduralTerrainGenerator.set_world_seed(FIXED_SEED)
+	else:
+		ProceduralTerrainGenerator.randomize_world_seed()
+	print("[terrain_test] Graine du monde : %d" % ProceduralTerrainGenerator.world_seed)
 	_build_environment()
 	_build_terrain()
 	print("[terrain_test] Terrain construit (grille %.2f)." % ProceduralTerrainGenerator.VOXEL_SIZE)

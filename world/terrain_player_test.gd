@@ -11,6 +11,9 @@ extends Node3D
 ##   - CONSTRUCTION : clic gauche = casser le bloc visé (on ramasse son
 ##     matériau), clic droit = poser un bloc du matériau en main, aligné sur la
 ##     grille. Touches 1 à 9 : choisir la matière à poser.
+##   - GRAINE : tirée au hasard à chaque lancement et affichée dans la console
+##     (GAME-1219). Mettre FIXED_SEED à une valeur positive pour rejouer un
+##     monde précis.
 
 const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_generator.gd")
 const TerrainEditing := preload("res://world/terrain_editing.gd")
@@ -24,8 +27,15 @@ const SPAWN_LIFT := 3.0
 const DROP_MARGIN := 0.2
 const SCAN_TOP := 400.0
 const SCAN_BOTTOM := -400.0
-const SPAWN_TIMEOUT := 12.0
+const SPAWN_TIMEOUT := 20.0
 const FALL_LIMIT := -120.0
+## Graine fixe pour rejouer un monde ; -1 = graine tirée au hasard.
+const FIXED_SEED := -1
+## Le filet anti-chute ne vaut que pendant ces premières secondes au sol :
+## après, être sous la surface veut simplement dire qu'on explore une grotte.
+const SPAWN_GRACE := 6.0
+## Tolérance (unités) entre la hauteur analytique et la collision trouvée.
+const SURFACE_TOLERANCE := 3.0
 
 const EDIT_DISTANCE := 6.0     # portée de construction, en unités de monde
 
@@ -44,8 +54,14 @@ var _reported := false
 var _report_time := 0.0
 ## Matériau en main : celui du dernier bloc cassé (terre au départ).
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
+var _grace_left := 0.0
 
 func _ready() -> void:
+	if FIXED_SEED >= 0:
+		ProceduralTerrainGenerator.set_world_seed(FIXED_SEED)
+	else:
+		ProceduralTerrainGenerator.randomize_world_seed()
+	print("[terrain] Graine du monde : %d" % ProceduralTerrainGenerator.world_seed)
 	_build_environment()
 	_build_terrain()
 	_spawn_player()
@@ -126,11 +142,12 @@ func _depenetrate_player() -> void:
 func _physics_process(delta: float) -> void:
 	if _grounded:
 		var p0 := _player.global_position
-		# Secours : la croûte sous la surface est toujours pleine ; s'y trouver
-		# sans toucher le sol veut dire qu'on est passé au travers.
+		# Secours des premières secondes seulement : passé ce délai, être sous
+		# la surface signifie simplement qu'on explore une grotte.
+		_grace_left = maxf(_grace_left - delta, 0.0)
 		var surf := ProceduralTerrainGenerator.get_height(p0.x, p0.z)
-		if not _player.is_on_floor() and _player.velocity.y < 0.0 \
-				and p0.y < surf - 3.0 and p0.y > surf - (ProceduralTerrainGenerator.SURFACE_CRUST - 1.0):
+		if _grace_left > 0.0 and not _player.is_on_floor() and _player.velocity.y < 0.0 \
+				and p0.y < surf - 2.0:
 			_begin_settle()
 			return
 		if p0.y < FALL_LIMIT:
@@ -162,28 +179,37 @@ func _begin_settle() -> void:
 	push_warning("[terrain_player] Rattrapage anti-chute : le joueur était passé sous le terrain.")
 
 func _settle_step(delta: float) -> void:
-	# GAME-1210 : on attend que la collision existe vraiment sous le joueur
-	# avant de lui rendre la physique. Rien ne tombe pendant ce temps.
+	# GAME-1210 : on attend que la collision existe vraiment SOUS LA SURFACE
+	# avant de rendre la physique au joueur. Le rayon ne balaie qu'une fenêtre
+	# autour de la hauteur analytique : sinon, un plafond de grotte chargé avant
+	# le sol ferait apparaître le joueur sous terre.
 	_elapsed += delta
 	var p := _player.global_position
+	var surf := ProceduralTerrainGenerator.get_height(p.x, p.z)
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(
-		Vector3(p.x, SCAN_TOP, p.z), Vector3(p.x, SCAN_BOTTOM, p.z))
+		Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
+		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
 	query.exclude = [_player.get_rid()]
 	var hit := space.intersect_ray(query)
 	if hit:
 		_drop_player(float(hit.position.y) + DROP_MARGIN)
 	elif _elapsed >= SPAWN_TIMEOUT:
-		push_warning("[terrain_player] Timeout : collision non trouvée sous le joueur.")
-		_drop_player(p.y)
+		push_warning("[terrain_player] Collision toujours absente : pose sur la hauteur calculée.")
+		_drop_player(surf + DROP_MARGIN)
 
 func _drop_player(y: float) -> void:
 	_grounded = true
+	_grace_left = SPAWN_GRACE
 	var p := _player.global_position
 	_player.global_position = Vector3(p.x, y, p.z)
 	_player.velocity = Vector3.ZERO
 	_player.set_physics_process(true)
-	print("[terrain_player] Joueur posé au sol à y=%.1f" % y)
+	# Au cas où la collision le coince dans un versant, on le dégage tout de suite.
+	_depenetrate_player()
+	print("[terrain_player] Joueur posé au sol à y=%.1f (biome %s)" % [
+		_player.global_position.y,
+		ProceduralTerrainGenerator.BIOME_NAMES[ProceduralTerrainGenerator.get_biome(p.x, p.z)]])
 
 func _spawn_player() -> void:
 	_player = PlayerScene.instantiate()
