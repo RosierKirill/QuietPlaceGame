@@ -24,6 +24,9 @@ const SOLID := -1.0
 const AIR := 1.0
 const N := 3                      # sous-voxels par bloc et par axe
 
+# Forme renvoyée par _block_state : (état, épaisseur au bord haut, au bord bas).
+const VOID_SHAPE := Vector3i(0, 3, 1)   # Shapes.VIDE
+
 # Bruits instanciés une seule fois : les recréer à chaque appel coûterait cher.
 var _height_noise: FastNoiseLite
 var _mask_noise: FastNoiseLite
@@ -144,6 +147,25 @@ func column_data(bx: int, bz: int) -> Dictionary:
 	}
 
 
+## Colonne mise en cache : les LOD lointains relisent souvent la même.
+func _cached_column(bx: int, bz: int, cache: Dictionary) -> Dictionary:
+	var key := Vector2i(bx, bz)
+	var col: Dictionary = cache.get(key, {})
+	if col.is_empty():
+		col = column_data(bx, bz)
+		cache[key] = col
+	return col
+
+
+## Hauteur, en sous-voxels, où le NIVEAU 0 pose vraiment la surface au centre du
+## bloc : la dalle de neige de la toundra ajoute un sous-voxel, et le champ du
+## niveau 0 étant binaire, la surface tombe à mi-chemin entre le dernier
+## sous-voxel plein et le premier vide (d'où le -0.5). Les LOD lointains
+## s'alignent dessus : sans ce décalage le raccord laisse une fente de ciel.
+static func center_surface(col: Dictionary) -> float:
+	return float(col["hs"]) - 0.5 + (1.0 if col["snow"] else 0.0)
+
+
 ## Index du bloc le plus haut qui contient de la matière (hors neige).
 static func top_block(hs: int) -> int:
 	return int(floor(float(hs - 1) / N)) if hs > 0 else -1
@@ -188,54 +210,64 @@ func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
 		for bz in range(bz0, bz1 + 1):
 			var col: Dictionary = columns[Vector2i(bx, bz)]
 			for by in range(by0, by1 + 1):
-				var state := _block_state(bx, by, bz, columns, caves)
-				if state == Shapes.VIDE:
+				var shape := _block_state(bx, by, bz, columns, caves)
+				if shape.x == Shapes.VIDE:
 					continue
 				var material := _block_material(bx, by, bz, col, caves)
-				_write_block(out_buffer, origin, bx, by, bz, state, material)
+				_write_block(out_buffer, origin, bx, by, bz, shape, material)
 
 
-## État du bloc : plein, dalle, pente de sol, pente de plafond ou vide.
-func _block_state(bx: int, by: int, bz: int, columns: Dictionary, caves: Dictionary) -> int:
+## Forme du bloc, sous la forme (état, high, low) : `high` et `low` sont les
+## épaisseurs en sous-voxels aux deux bords d'une pente, et ne servent qu'à
+## elle. Voir BlockShapes.
+func _block_state(bx: int, by: int, bz: int, columns: Dictionary, caves: Dictionary) -> Vector3i:
 	var col: Dictionary = columns[Vector2i(bx, bz)]
 	var hs: int = col["hs"]
 	var top: int = top_block(hs)
 
 	# Dalle de neige de la toundra, juste au-dessus du sol.
 	if col["snow"] and by == int(hs / N):
-		return Shapes.PLAT_BAS if not caves.get(Vector3i(bx, by, bz), false) else Shapes.VIDE
+		if caves.get(Vector3i(bx, by, bz), false):
+			return VOID_SHAPE
+		return Vector3i(Shapes.PLAT_BAS, N, 1)
 	if by > top:
-		return Shapes.VIDE
+		return VOID_SHAPE
 	if caves.get(Vector3i(bx, by, bz), false):
-		return Shapes.VIDE
+		return VOID_SHAPE
 
-	var state := Shapes.PLEIN
 	if by == top:
-		# Bloc de surface : dalle si le sol s'arrête à un sous-voxel près.
+		# Bloc de surface. `rem` est la hauteur du sol DANS ce bloc, de 1 à 3
+		# sous-voxels : le sol se termine donc à 0.25, 0.5 ou 0.75.
 		var rem := hs - top * N
-		if rem == 1:
-			state = Shapes.PLAT_BAS
-		# Pente si le voisin le plus bas est exactement un bloc plus bas.
-		if state == Shapes.PLEIN:
-			var lowest := 99
-			var direction := -1
-			for d in 4:
-				var offset := Shapes.direction_offset(d)
-				var other: Dictionary = columns.get(Vector2i(bx + offset.x, bz + offset.y), col)
-				var other_top: int = top_block(other["hs"])
-				if other_top < lowest:
-					lowest = other_top
-					direction = d
-			if direction >= 0 and lowest == top - 1:
-				state = Shapes.floor_slope(direction)
-	elif caves.get(Vector3i(bx, by - 1, bz), false):
+		# La toundra est arasée au bloc et porte une dalle de neige plate :
+		# une pente laisserait cette dalle en l'air, donc on n'en met pas.
+		if col["snow"]:
+			return Vector3i(Shapes.flat_state(rem), N, 1)
+		# Pente suivant le DÉNIVELÉ RÉEL du voisin le plus bas : le dessus du
+		# bloc descend de `rem` vers `low`, au sous-voxel près.
+		var lowest := hs
+		var direction := -1
+		for d in 4:
+			var offset := Shapes.direction_offset(d)
+			var other: Dictionary = columns.get(Vector2i(bx + offset.x, bz + offset.y), col)
+			var other_hs: int = other["hs"]
+			if other_hs < lowest:
+				lowest = other_hs
+				direction = d
+		if direction < 0:
+			return Vector3i(Shapes.flat_state(rem), N, 1)
+		var low := maxi(rem - (hs - lowest), 0)
+		if low >= rem:
+			return Vector3i(Shapes.flat_state(rem), N, 1)
+		return Vector3i(Shapes.floor_slope(direction), rem, low)
+
+	if caves.get(Vector3i(bx, by - 1, bz), false):
 		# Plafond de grotte : on adoucit vers le côté creusé.
 		for d in 4:
 			var offset := Shapes.direction_offset(d)
 			if caves.get(Vector3i(bx + offset.x, by, bz + offset.y), false):
-				state = Shapes.ceiling_slope(d)
-				break
-	return state
+				return Vector3i(Shapes.ceiling_slope(d), N, 1)
+	return Vector3i(Shapes.PLEIN, N, 1)
 
 
 ## Matériau du bloc : biome en surface, terre, roche, minerai en profondeur.
@@ -268,8 +300,11 @@ func _block_material(bx: int, by: int, bz: int, col: Dictionary, caves: Dictiona
 
 ## Écrit les sous-voxels pleins d'un bloc, colonne par colonne.
 func _write_block(out_buffer: VoxelBuffer, origin: Vector3i,
-		bx: int, by: int, bz: int, state: int, material: int) -> void:
+		bx: int, by: int, bz: int, shape: Vector3i, material: int) -> void:
 	var size := out_buffer.get_size()
+	var state := shape.x
+	var high := shape.y
+	var low := shape.z
 	for lx in N:
 		var vx := bx * N + lx - origin.x
 		if vx < 0 or vx >= size.x:
@@ -278,7 +313,7 @@ func _write_block(out_buffer: VoxelBuffer, origin: Vector3i,
 			var vz := bz * N + lz - origin.z
 			if vz < 0 or vz >= size.z:
 				continue
-			var span := Shapes.column_range(state, lx, lz)
+			var span := Shapes.column_range(state, lx, lz, high, low)
 			if span.y < span.x:
 				continue
 			var y0 := by * N + span.x - origin.y
@@ -318,12 +353,8 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 		for iz in size.z:
 			var wz := origin.z + iz * step
 			var bz := _block_of(wz)
-			var key := Vector2i(bx, bz)
-			var col: Dictionary = columns.get(key, {})
-			if col.is_empty():
-				col = column_data(bx, bz)
-				columns[key] = col
-			var hs := float(col["hs"]) + (1.0 if col["snow"] else 0.0)
+			var col := _cached_column(bx, bz, columns)
+			var hs := center_surface(col)
 
 			# Indice, dans ce tampon, du dernier voxel sous la surface.
 			var top := int(floor((hs - float(origin.y)) / stepf))
