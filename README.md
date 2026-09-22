@@ -2,7 +2,7 @@
 
 Jeu de survie / RPG à la **première personne** — `v0.2.0`.
 Moteur : **[Godot 4](https://godotengine.org/)** · Langage : **GDScript**.
-Inspirations : Half-Life, Skyrim, 7 Days to Die, Minecraft.
+Inspirations : Skyrim, Minecraft.
 
 ## État du projet
 
