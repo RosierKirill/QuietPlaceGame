@@ -89,9 +89,10 @@ const MAT_SNOW := 6
 const MAT_COAL := 7
 const MAT_IRON := 8
 const MAT_COPPER := 9
+const MAT_PERMAFROST := 10
 const MATERIAL_NAMES := [
 	"herbe", "herbe sèche", "herbe froide", "terre", "roche",
-	"sable", "neige", "charbon", "fer", "cuivre",
+	"sable", "neige", "charbon", "fer", "cuivre", "permafrost",
 ]
 
 # --- Biomes (valeurs de retour de get_biome) ---
@@ -132,6 +133,7 @@ static var h_rain := 0.60
 static func set_world_seed(value: int) -> void:
 	world_seed = value
 	_roll_biome_thresholds()
+	_refresh_query()
 
 ## Tire une graine au hasard, la fixe, et la renvoie (pour l'afficher/sauver).
 static func randomize_world_seed() -> int:
@@ -139,7 +141,13 @@ static func randomize_world_seed() -> int:
 	rng.randomize()
 	world_seed = int(rng.randi() % 1000000)
 	_roll_biome_thresholds()
+	_refresh_query()
 	return world_seed
+
+## Les bruits du générateur de requête suivent la graine.
+static func _refresh_query() -> void:
+	if _query != null:
+		_query.rebuild_noises()
 
 ## Tire les seuils de biome de cette graine : chaque monde a ses proportions.
 static func _roll_biome_thresholds() -> void:
@@ -164,7 +172,7 @@ static func biome_thresholds_text() -> String:
 static func _freq(world_frequency: float) -> float:
 	return world_frequency * VOXEL_SIZE
 
-static func _make_height_noise() -> FastNoiseLite:
+static func make_height_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed
@@ -177,7 +185,7 @@ static func _make_height_noise() -> FastNoiseLite:
 	n.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
 	return n
 
-static func _make_mask_noise() -> FastNoiseLite:
+static func make_mask_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 2
@@ -185,7 +193,7 @@ static func _make_mask_noise() -> FastNoiseLite:
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
-static func _make_ridge_noise() -> FastNoiseLite:
+static func make_ridge_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 3
@@ -194,7 +202,7 @@ static func _make_ridge_noise() -> FastNoiseLite:
 	n.fractal_octaves = 3
 	return n
 
-static func _make_temperature_noise() -> FastNoiseLite:
+static func make_temperature_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 10
@@ -202,7 +210,7 @@ static func _make_temperature_noise() -> FastNoiseLite:
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
-static func _make_humidity_noise() -> FastNoiseLite:
+static func make_humidity_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 11
@@ -210,7 +218,7 @@ static func _make_humidity_noise() -> FastNoiseLite:
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
-static func _make_cave_noise(index: int) -> FastNoiseLite:
+static func make_cave_noise(index: int) -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 20 + index
@@ -219,7 +227,7 @@ static func _make_cave_noise(index: int) -> FastNoiseLite:
 	n.fractal_octaves = 1
 	return n
 
-static func _make_room_noise() -> FastNoiseLite:
+static func make_room_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 30
@@ -227,7 +235,7 @@ static func _make_room_noise() -> FastNoiseLite:
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
-static func _make_ore_noise() -> FastNoiseLite:
+static func make_ore_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 40
@@ -235,7 +243,7 @@ static func _make_ore_noise() -> FastNoiseLite:
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
 
-static func _make_ore_type_noise() -> FastNoiseLite:
+static func make_ore_type_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
 	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	n.seed = world_seed + 41
@@ -244,7 +252,7 @@ static func _make_ore_type_noise() -> FastNoiseLite:
 	return n
 
 ## Silhouette du terrain : X = bruit normalisé 0..1, Y = profil de hauteur.
-static func _make_height_curve() -> Curve:
+static func make_height_curve() -> Curve:
 	var c := Curve.new()
 	c.min_value = 0.0
 	c.max_value = 1.0
@@ -257,7 +265,7 @@ static func _make_height_curve() -> Curve:
 	return c
 
 ## Répartition montagne : X = masque brut 0..1, Y = proportion de montagne.
-static func _make_mask_curve() -> Curve:
+static func make_mask_curve() -> Curve:
 	var c := Curve.new()
 	c.min_value = 0.0
 	c.max_value = 1.0
@@ -298,34 +306,51 @@ static func to_world(voxel_position: Vector3) -> Vector3:
 	return voxel_position * VOXEL_SIZE
 
 
-# --- Calculs partagés (mêmes formules que le graphe) --------------------------
+# --- Requêtes de terrain (mêmes formules que la génération) -------------------
+#
+# Le monde n'est plus décrit par un graphe voxel mais par WorldGenerator, qui
+# raisonne en BLOCS. Pour que le spawn, la faune et les futurs outils lisent
+# exactement le même monde, tout passe par une instance de requête partagée.
 
-static func _noise01(n: FastNoiseLite, x: float, z: float) -> float:
-	return clampf(n.get_noise_2d(x, z) * 0.5 + 0.5, 0.0, 1.0)
+# Chargé paresseusement : WorldGenerator dépend déjà de ce fichier, un preload
+# dans les deux sens serait circulaire.
+static var _query = null
 
-## Hauteur du sol au point (x,z) EN UNITÉS DE MONDE, quantifiée par blocs.
+## Générateur de requête (ses bruits suivent la graine).
+static func query():
+	if _query == null:
+		_query = load("res://world/world_generator.gd").new()
+	return _query
+
+## Générateur à poser sur le terrain.
+static func build() -> VoxelGenerator:
+	var generator = load("res://world/world_generator.gd").new()
+	print("[terrain] Monde en blocs — graine %d, seuils : %s" % [
+		world_seed, biome_thresholds_text()])
+	return generator
+
+## Hauteur du sol au point (x,z), EN UNITÉS DE MONDE, quantifiée comme la
+## génération (blocs de BLOCK_SIZE, dalle de neige comprise).
 static func get_height(x: float, z: float) -> float:
-	var vx := x / VOXEL_SIZE
-	var vz := z / VOXEL_SIZE
-
-	var profile := _make_height_curve().sample_baked(_noise01(_make_height_noise(), vx, vz))
-	var mask := _make_mask_curve().sample_baked(_noise01(_make_mask_noise(), vx, vz))
-	var amp := BASE_AMPLITUDE + mask * MOUNTAIN_AMPLITUDE
-
-	var ridge := 1.0 - absf(_make_ridge_noise().get_noise_2d(vx, vz))
-	var ridge_h := ridge * ridge * RIDGE_AMPLITUDE * mask
-
-	return snappedf(profile * amp + ridge_h, BLOCK_SIZE)
+	var generator = query()
+	var bx := int(floor(x / VOXEL_SIZE / BLOCK_VOXELS))
+	var bz := int(floor(z / VOXEL_SIZE / BLOCK_VOXELS))
+	var column: Dictionary = generator.column_data(bx, bz)
+	var hs: int = column["hs"]
+	if column["snow"]:
+		hs += 1
+	return float(hs) * VOXEL_SIZE
 
 ## Température [0,1] au point (x,z) : bruit basse fréquence, corrigé par l'altitude.
 static func get_temperature(x: float, z: float) -> float:
-	var base := _noise01(_make_temperature_noise(), x / VOXEL_SIZE, z / VOXEL_SIZE)
-	var altitude := maxf(get_height(x, z) - COLD_ALTITUDE_START, 0.0)
-	return clampf(base - altitude / COLD_ALTITUDE_RANGE, 0.0, 1.0)
+	var generator = query()
+	var vx := x / VOXEL_SIZE
+	var vz := z / VOXEL_SIZE
+	return generator.temperature_at(vx, vz, generator.surface_voxels(vx, vz))
 
 ## Humidité [0,1] au point (x,z).
 static func get_humidity(x: float, z: float) -> float:
-	return _noise01(_make_humidity_noise(), x / VOXEL_SIZE, z / VOXEL_SIZE)
+	return query().humidity_at(x / VOXEL_SIZE, z / VOXEL_SIZE)
 
 ## Biome au point (x,z) — voir BIOME_NAMES. Sert aussi à la faune et à la flore.
 static func get_biome(x: float, z: float) -> int:
@@ -353,7 +378,9 @@ static func biome_from(temperature: float, humidity: float) -> int:
 static func surface_material_of(biome: int) -> int:
 	match biome:
 		BIOME_TUNDRA:
-			return MAT_SNOW
+			# Toundra : permafrost, trop froid pour l'herbe ; la neige est une
+			# dalle posée par-dessus par le générateur.
+			return MAT_PERMAFROST
 		BIOME_TAIGA:
 			return MAT_GRASS_COLD
 		BIOME_DESERT:
@@ -362,238 +389,3 @@ static func surface_material_of(biome: int) -> int:
 			return MAT_GRASS_DRY
 		_:
 			return MAT_GRASS
-
-
-# --- Construction du graphe ---------------------------------------------------
-
-static func _constant(g: VoxelGraphFunction, value: float, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_CONSTANT, pos)
-	g.set_node_param(n, 0, value)
-	return n
-
-## Select : t < seuil -> a, sinon b.
-static func _select(g: VoxelGraphFunction, a: int, b: int, t: int, threshold: float, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_SELECT, pos)
-	g.add_connection(a, 0, n, 0)
-	g.add_connection(b, 0, n, 1)
-	g.add_connection(t, 0, n, 2)
-	g.set_node_param(n, 0, threshold)
-	return n
-
-## Expression mathématique avec des entrées nommées.
-static func _expr(g: VoxelGraphFunction, expression: String, inputs: Array, sources: Array, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_EXPRESSION, pos)
-	g.set_node_param(n, 0, expression)
-	g.set_expression_node_inputs(n, PackedStringArray(inputs))
-	for i in sources.size():
-		g.add_connection(int(sources[i]), 0, n, i)
-	return n
-
-static func _noise_2d(g: VoxelGraphFunction, noise: FastNoiseLite, x: int, z: int, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_NOISE_2D, pos)
-	g.set_node_param(n, 0, noise)
-	g.add_connection(x, 0, n, 0)
-	g.add_connection(z, 0, n, 1)
-	return n
-
-static func _noise_3d(g: VoxelGraphFunction, noise: FastNoiseLite, x: int, y: int, z: int, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_NOISE_3D, pos)
-	g.set_node_param(n, 0, noise)
-	g.add_connection(x, 0, n, 0)
-	g.add_connection(y, 0, n, 1)
-	g.add_connection(z, 0, n, 2)
-	return n
-
-static func _curve(g: VoxelGraphFunction, curve: Curve, src: int, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_CURVE, pos)
-	g.set_node_param(n, 0, curve)
-	g.add_connection(src, 0, n, 0)
-	return n
-
-## Sous-graphe de relief CONTINU (avant quantification) à partir d'entrées X/Z.
-## Instancié trois fois : au point, puis décalé en X et en Z, pour mesurer la pente.
-static func _add_height_nodes(g: VoxelGraphFunction, x_src: int, z_src: int, oy: float) -> Dictionary:
-	var amp_base := BASE_AMPLITUDE / VOXEL_SIZE
-	var amp_mtn := MOUNTAIN_AMPLITUDE / VOXEL_SIZE
-	var amp_ridge := RIDGE_AMPLITUDE / VOXEL_SIZE
-
-	var n_base := _noise_2d(g, _make_height_noise(), x_src, z_src, Vector2(240, oy))
-	var n_t := _expr(g, "n * 0.5 + 0.5", ["n"], [n_base], Vector2(440, oy))
-	var n_profile := _curve(g, _make_height_curve(), n_t, Vector2(640, oy))
-
-	var n_mask_raw := _noise_2d(g, _make_mask_noise(), x_src, z_src, Vector2(240, oy + 200))
-	var n_mask_t := _expr(g, "n * 0.5 + 0.5", ["n"], [n_mask_raw], Vector2(440, oy + 200))
-	var n_mask := _curve(g, _make_mask_curve(), n_mask_t, Vector2(640, oy + 200))
-
-	var n_ridge_raw := _noise_2d(g, _make_ridge_noise(), x_src, z_src, Vector2(240, oy + 400))
-
-	var n_height_c := _expr(g,
-		"p * %f + p * m * %f + (1.0 - abs(r)) * (1.0 - abs(r)) * %f * m" % [
-			amp_base, amp_mtn, amp_ridge],
-		["p", "m", "r"], [n_profile, n_mask, n_ridge_raw], Vector2(900, oy + 100))
-
-	return {"height": n_height_c, "base": n_base}
-
-## Arrondit une coordonnée au bloc : la valeur reste constante sur les 3 voxels
-## d'un bloc. C'est ce qui rend les grottes « en blocs » comme la surface.
-static func _block_quantize(g: VoxelGraphFunction, src: int, pos: Vector2) -> int:
-	var n := g.create_node(VoxelGraphFunction.NODE_STEPIFY, pos)
-	var shifted := _expr(g, "v - 1.0", ["v"], [src], pos - Vector2(120, 0))
-	g.add_connection(shifted, 0, n, 0)
-	g.set_node_default_input(n, 1, float(BLOCK_VOXELS))
-	return _expr(g, "v + 1.0", ["v"], [n], pos + Vector2(120, 0))
-
-static func build() -> VoxelGeneratorGraph:
-	var graph := VoxelGeneratorGraph.new()
-	graph.clear()
-	graph.texture_mode = VoxelGeneratorGraph.TEXTURE_MODE_SINGLE
-	var g := graph.get_main_function()
-	var T := VoxelGraphFunction
-
-	var vs := VOXEL_SIZE                 # unité de monde par voxel
-	var step := SLOPE_STEP / vs          # pas de mesure de pente, en voxels
-
-	var in_x := g.create_node(T.NODE_INPUT_X, Vector2(0, 0))
-	var in_y := g.create_node(T.NODE_INPUT_Y, Vector2(0, 200))
-	var in_z := g.create_node(T.NODE_INPUT_Z, Vector2(0, 400))
-
-	# --- 1. Relief, quantifié par blocs ---
-	var h0 := _add_height_nodes(g, in_x, in_z, 0.0)
-	var n_height_c: int = h0["height"]
-
-	var n_height := g.create_node(T.NODE_STEPIFY, Vector2(1100, 100))
-	g.add_connection(n_height_c, 0, n_height, 0)
-	g.set_node_default_input(n_height, 1, float(BLOCK_VOXELS))
-
-	var n_terrain := _expr(g, "y - h", ["y", "h"], [in_y, n_height], Vector2(1300, 100))
-
-	# --- 2. Pente : hauteur mesurée un pas plus loin en X puis en Z ---
-	var x_step := _expr(g, "x + %f" % step, ["x"], [in_x], Vector2(0, 2600))
-	var z_step := _expr(g, "z + %f" % step, ["z"], [in_z], Vector2(0, 3400))
-	var hx: int = _add_height_nodes(g, x_step, in_z, 2600.0)["height"]
-	var hz: int = _add_height_nodes(g, in_x, z_step, 3400.0)["height"]
-	var n_slope := _expr(g, "sqrt((a - h) * (a - h) + (b - h) * (b - h)) / %f" % step,
-		["a", "b", "h"], [hx, hz, n_height_c], Vector2(1300, 3000))
-
-	# --- 3. Grottes EN BLOCS : les bruits sont lus au centre du bloc, donc
-	#        constants sur tout le bloc — même logique que les terrasses. ---
-	var qx := _block_quantize(g, in_x, Vector2(240, 620))
-	var qy := _block_quantize(g, in_y, Vector2(240, 660))
-	var qz := _block_quantize(g, in_z, Vector2(240, 700))
-
-	var n_cave_a := _noise_3d(g, _make_cave_noise(0), qx, qy, qz, Vector2(520, 700))
-	var n_cave_b := _noise_3d(g, _make_cave_noise(1), qx, qy, qz, Vector2(520, 900))
-	var n_room := _noise_3d(g, _make_room_noise(), qx, qy, qz, Vector2(520, 1100))
-
-	# Les valeurs de bruit ne sont pas des distances : on les convertit en voxels
-	# (un bruit de fréquence f varie d'environ 2.5 * f par voxel).
-	var cave_scale := 1.0 / (2.5 * _freq(CAVE_FREQUENCY))
-	var room_scale := 1.0 / (2.5 * _freq(ROOM_FREQUENCY))
-
-	# Couloirs : négatif seulement là où LES DEUX bandes sont proches de zéro.
-	var n_tunnels := _expr(g, "max(abs(a) - %f, abs(b) - %f) * %f" % [
-			CAVE_WIDTH, CAVE_WIDTH, cave_scale],
-		["a", "b"], [n_cave_a, n_cave_b], Vector2(760, 800))
-	# Salles : négatif dans les bulles de bruit les plus fortes.
-	var n_rooms := _expr(g, "(%f - r) * %f" % [ROOM_THRESHOLD, room_scale],
-		["r"], [n_room], Vector2(760, 1100))
-	var n_caves := _expr(g, "min(t, s)", ["t", "s"], [n_tunnels, n_rooms], Vector2(1000, 950))
-
-	# Croûte : rien n'est creusé trop près de la surface.
-	var n_guard := _expr(g, "d + %f" % (SURFACE_CRUST / vs), ["d"], [n_terrain], Vector2(1000, 700))
-	var n_gated := _expr(g, "max(c, g)", ["c", "g"], [n_caves, n_guard], Vector2(1240, 800))
-
-	# Soustraction franche (pas de lissage) : les parois restent à angle droit,
-	# le mailleur se charge du biseau.
-	var n_final := _expr(g, "max(t, 0.0 - c)", ["t", "c"], [n_terrain, n_gated], Vector2(1500, 300))
-
-	var out_sdf := g.create_node(T.NODE_OUTPUT_SDF, Vector2(1750, 300))
-	g.add_connection(n_final, 0, out_sdf, 0)
-
-	# --- 4. Biomes : température (avec altitude) et humidité ---
-	var n_temp_raw := _noise_2d(g, _make_temperature_noise(), in_x, in_z, Vector2(240, 1400))
-	var n_hum_raw := _noise_2d(g, _make_humidity_noise(), in_x, in_z, Vector2(240, 1600))
-
-	var n_temp := _expr(g,
-		"clamp(t * 0.5 + 0.5 - max(h * %f - %f, 0.0) / %f, 0.0, 1.0)" % [
-			vs, COLD_ALTITUDE_START, COLD_ALTITUDE_RANGE],
-		["t", "h"], [n_temp_raw, n_height], Vector2(520, 1400))
-	var n_hum := _expr(g, "h * 0.5 + 0.5", ["h"], [n_hum_raw], Vector2(520, 1600))
-
-	# --- 5. Matériaux ---
-	var c_grass := _constant(g, MAT_GRASS, Vector2(760, 1300))
-	var c_grass_dry := _constant(g, MAT_GRASS_DRY, Vector2(760, 1350))
-	var c_grass_cold := _constant(g, MAT_GRASS_COLD, Vector2(760, 1400))
-	var c_dirt := _constant(g, MAT_DIRT, Vector2(760, 1450))
-	var c_rock := _constant(g, MAT_ROCK, Vector2(760, 1500))
-	var c_sand := _constant(g, MAT_SAND, Vector2(760, 1550))
-	var c_snow := _constant(g, MAT_SNOW, Vector2(760, 1600))
-	var c_coal := _constant(g, MAT_COAL, Vector2(760, 1650))
-	var c_iron := _constant(g, MAT_IRON, Vector2(760, 1700))
-	var c_copper := _constant(g, MAT_COPPER, Vector2(760, 1750))
-
-	# Surface chaude : désert / savane / forêt humide.
-	var hot_a := _select(g, c_sand, c_grass_dry, n_hum, h_desert, Vector2(1000, 1500))
-	var hot := _select(g, hot_a, c_grass, n_hum, h_rain, Vector2(1180, 1500))
-	# Surface tempérée : désert / prairie / forêt.
-	var temperate_a := _select(g, c_sand, c_grass_dry, n_hum, h_desert, Vector2(1000, 1650))
-	var temperate := _select(g, temperate_a, c_grass, n_hum, h_forest, Vector2(1180, 1650))
-	# Froid : toundra (neige) puis taïga (herbe froide).
-	var cold := _select(g, c_snow, c_grass_cold, n_temp, t_tundra, Vector2(1180, 1350))
-
-	var biome_a := _select(g, cold, temperate, n_temp, t_taiga, Vector2(1360, 1500))
-	var biome_mat := _select(g, biome_a, hot, n_temp, t_hot, Vector2(1540, 1500))
-
-	# La PENTE prime sur le biome : l'herbe ne tient pas sur un versant raide.
-	# Sous l'herbe il y a de la terre, sous le sable ou la neige de la roche.
-	var steep_mat := _select(g, c_dirt, biome_mat, biome_mat, 2.5, Vector2(1720, 1420))
-	var slope_a := _select(g, biome_mat, steep_mat, n_slope, SLOPE_DIRT, Vector2(1900, 1500))
-	var slope_b := _select(g, slope_a, c_rock, n_slope, SLOPE_ROCK, Vector2(2080, 1500))
-
-	# Altitude : sommets rocheux, avec une limite irrégulière.
-	var n_alt := _expr(g, "h * %f - b * %f" % [vs, ROCK_ALTITUDE_JITTER],
-		["h", "b"], [n_height, h0["base"]], Vector2(1900, 1300))
-	var surface := _select(g, slope_b, c_rock, n_alt, ROCK_ALTITUDE, Vector2(2260, 1500))
-
-	# Sous-couche : terre sous l'herbe, roche sous la roche, sable sous le sable,
-	# terre sous la neige.
-	var sub_a := _select(g, c_dirt, c_rock, surface, 3.5, Vector2(2260, 1700))
-	var sub_b := _select(g, sub_a, c_sand, surface, 4.5, Vector2(2440, 1700))
-	var sub := _select(g, sub_b, c_dirt, surface, 5.5, Vector2(2620, 1700))
-
-	# Profondeur sous la surface, quantifiée par blocs elle aussi.
-	var qy_mat := _block_quantize(g, in_y, Vector2(1300, 1900))
-	var n_depth := _expr(g, "h - y", ["h", "y"], [n_height, qy_mat], Vector2(1700, 1900))
-	# Sur un versant, la couche de surface doit être mesurée PERPENDICULAIREMENT
-	# à la pente, sinon la montagne montre sa sous-couche de terre partout.
-	var n_depth_n := _expr(g, "d / sqrt(1.0 + s * s)", ["d", "s"],
-		[n_depth, n_slope], Vector2(1900, 1900))
-
-	# Minerais : proches d'une paroi de grotte, assez profonds, dans une veine.
-	var n_wallness := _expr(g, "1.0 - min(abs(c) / %f, 1.0)" % (ORE_WALL_BAND / vs),
-		["c"], [n_gated], Vector2(1700, 2050))
-	var n_ore_noise := _noise_3d(g, _make_ore_noise(), qx, qy, qz, Vector2(760, 2050))
-	var n_ore_score := _expr(g, "(n * 0.5 + 0.5) * w * min(d / %f, 1.0)" % (ORE_MIN_DEPTH / vs),
-		["n", "w", "d"], [n_ore_noise, n_wallness, n_depth], Vector2(1940, 2050))
-	var n_ore_type := _noise_3d(g, _make_ore_type_noise(), qx, qy, qz, Vector2(760, 2250))
-	var n_ore_type01 := _expr(g, "n * 0.5 + 0.5", ["n"], [n_ore_type], Vector2(1000, 2250))
-
-	var ore_a := _select(g, c_coal, c_iron, n_ore_type01, 0.4, Vector2(1400, 2250))
-	var ore := _select(g, ore_a, c_copper, n_ore_type01, 0.62, Vector2(1580, 2250))
-	var deep := _select(g, c_rock, ore, n_ore_score, ORE_THRESHOLD, Vector2(2260, 2150))
-
-	# Empilement final : surface / sous-couche / profondeur.
-	var layered_a := _select(g, sub, deep, n_depth_n, SUB_DEPTH / vs, Vector2(2800, 1900))
-	var material := _select(g, surface, layered_a, n_depth_n, TOP_LAYER / vs, Vector2(2980, 1700))
-
-	var out_tex := g.create_node(T.NODE_OUTPUT_SINGLE_TEXTURE, Vector2(3160, 1700))
-	g.add_connection(material, 0, out_tex, 0)
-
-	var result := graph.compile()
-	if typeof(result) == TYPE_DICTIONARY and result.has("success") and not result["success"]:
-		push_error("[terrain] Échec compilation du graphe : %s (noeud %s)" % [
-			result.get("message", ""), str(result.get("node_id", -1))])
-	else:
-		print("[terrain] Graphe compilé — graine %d, seuils : %s" % [
-			world_seed, biome_thresholds_text()])
-	return graph

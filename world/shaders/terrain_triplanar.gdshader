@@ -9,7 +9,7 @@ render_mode cull_back;
 // poids (y), en 8 bits chacun.
 //
 // Matériaux : 0 herbe, 1 herbe sèche, 2 herbe froide, 3 terre, 4 roche,
-//             5 sable, 6 neige, 7 charbon, 8 fer, 9 cuivre.
+//             5 sable, 6 neige, 7 charbon, 8 fer, 9 cuivre, 10 permafrost.
 //
 // Comme dans Minecraft, les matières végétales sont désaturées puis teintées :
 // une seule texture d'herbe sert aux trois herbes (tempérée, sèche, froide).
@@ -35,6 +35,7 @@ uniform vec3 tint_grass_cold : source_color = vec3(0.52, 0.66, 0.52);
 uniform vec3 tint_coal : source_color = vec3(0.24, 0.24, 0.27);
 uniform vec3 tint_iron : source_color = vec3(0.85, 0.66, 0.50);
 uniform vec3 tint_copper : source_color = vec3(0.42, 0.76, 0.62);
+uniform vec3 tint_permafrost : source_color = vec3(0.72, 0.78, 0.84);
 
 // Secours géométrique si le maillage ne porte aucun matériau.
 uniform float rock_to_dirt_low = 0.55;
@@ -106,8 +107,10 @@ vec3 material_color(float index, vec3 p, vec3 n) {
 		return tinted(c_rock, tint_coal);
 	} else if (index < 8.5) {                // fer
 		return tinted(c_rock, tint_iron);
+	} else if (index < 9.5) {                // cuivre
+		return tinted(c_rock, tint_copper);
 	}
-	return tinted(c_rock, tint_copper);      // cuivre
+	return tinted(c_dirt, tint_permafrost);  // permafrost (terre gelée)
 }
 
 // Ancien choix purement géométrique (secours).
