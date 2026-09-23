@@ -78,6 +78,14 @@ const SLOPE_STEP := 1.0              # pas (unités) de la mesure de pente
 const SLOPE_DIRT := 1.5              # pente (tangente) au-delà : plus d'herbe
 const SLOPE_ROCK := 3.0              # pente au-delà : roche à nu
 
+# --- Lissage du relief (GAME-1226) ---
+# Dosage de la passe de moyenne sur le champ de hauteur : 0 = aucun lissage,
+# 1 = moyenne pleine (noyau binomial 1-2-1 sur les 8 colonnes voisines).
+const SMOOTH_STRENGTH := 1.0
+# Tramage de la surface, en sous-voxels crête à crête : casse les courbes de
+# niveau que la quantification dessine sur les pentes très douces. 0 = aucun.
+const SURFACE_DITHER := 0.8
+
 # --- Matériaux (indice écrit dans le canal INDICES) ---
 const MAT_GRASS := 0                 # herbe tempérée
 const MAT_GRASS_DRY := 1             # herbe sèche (savane, prairie sèche)
@@ -336,9 +344,11 @@ static func get_height(x: float, z: float) -> float:
 	var bx := int(floor(x / VOXEL_SIZE / BLOCK_VOXELS))
 	var bz := int(floor(z / VOXEL_SIZE / BLOCK_VOXELS))
 	var column: Dictionary = generator.column_data(bx, bz)
-	var hs: int = column["hs"]
+	var h: float = generator.smoothed_surface(bx, bz)
+	var hs := int(floor(h + 0.5))
 	if column["snow"]:
-		hs += 1
+		# Toundra : permafrost arasé au bloc, puis la dalle de neige.
+		hs = int(floor(float(hs) / float(BLOCK_VOXELS) + 0.5)) * BLOCK_VOXELS + 1
 	return float(hs) * VOXEL_SIZE
 
 ## Température [0,1] au point (x,z) : bruit basse fréquence, corrigé par l'altitude.
