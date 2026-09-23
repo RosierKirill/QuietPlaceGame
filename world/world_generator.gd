@@ -43,6 +43,8 @@ var _cave_b: FastNoiseLite
 var _room_noise: FastNoiseLite
 var _ore_noise: FastNoiseLite
 var _ore_type_noise: FastNoiseLite
+var _entrance_noise: FastNoiseLite
+var _rock_noise: FastNoiseLite
 var _height_curve: Curve
 var _mask_curve: Curve
 
@@ -63,6 +65,8 @@ func rebuild_noises() -> void:
 	_room_noise = PTG.make_room_noise()
 	_ore_noise = PTG.make_ore_noise()
 	_ore_type_noise = PTG.make_ore_type_noise()
+	_entrance_noise = PTG.make_entrance_noise()
+	_rock_noise = PTG.make_rock_noise()
 	_height_curve = PTG.make_height_curve()
 	_mask_curve = PTG.make_mask_curve()
 
@@ -95,14 +99,29 @@ func humidity_at(vx: float, vz: float) -> float:
 	return clampf(_humidity_noise.get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
 
 
+## Épaisseur de sol plein sous la surface, en sous-voxels (GAME-1227).
+##
+## Ailleurs elle vaut SURFACE_CRUST et aucune grotte ne perce le sol. Mais un
+## bruit de basse fréquence désigne des taches où elle s'amincit jusqu'à zéro :
+## un tunnel qui passe sous une tache débouche à l'air libre. C'est ce qui donne
+## les entrées de grotte, gouffres compris en terrain plat.
+func crust_voxels(cx: float, cz: float) -> float:
+	var full := PTG.SURFACE_CRUST / PTG.VOXEL_SIZE
+	var e := _entrance_noise.get_noise_2d(cx, cz) * 0.5 + 0.5
+	if e <= PTG.ENTRANCE_THRESHOLD:
+		return full
+	var t := (e - PTG.ENTRANCE_THRESHOLD) / (PTG.ENTRANCE_OPEN - PTG.ENTRANCE_THRESHOLD)
+	return full * clampf(1.0 - t, 0.0, 1.0)
+
+
 ## Le bloc est-il creusé par une grotte ? Les bruits sont lus au centre du bloc,
 ## donc constants sur tout le bloc : les grottes sont en blocs, comme la surface.
 func cave_at(bx: int, by: int, bz: int, surface_v: float) -> bool:
 	var cx := float(bx * N + 1)
 	var cy := float(by * N + 1)
 	var cz := float(bz * N + 1)
-	# Croûte : rien n'est creusé trop près de la surface.
-	if cy > surface_v - PTG.SURFACE_CRUST / PTG.VOXEL_SIZE:
+	# Croûte : rien n'est creusé trop près de la surface, sauf aux entrées.
+	if cy > surface_v - crust_voxels(cx, cz):
 		return false
 	var a := absf(_cave_a.get_noise_3d(cx, cy, cz)) - PTG.CAVE_WIDTH
 	var b := absf(_cave_b.get_noise_3d(cx, cy, cz)) - PTG.CAVE_WIDTH
@@ -194,17 +213,42 @@ static func _hash01(a: int, b: int) -> float:
 	return float((h ^ (h >> 16)) & 0xFFFF) / 65535.0
 
 
+## Pente du terrain à cette colonne, en TANGENTE (dénivelé / distance) : les
+## hauteurs sont en sous-voxels et deux colonnes voisines sont à N sous-voxels
+## l'une de l'autre, d'où la division par N.
+func column_slope(bx: int, bz: int, smooth: Dictionary) -> float:
+	var h0: float = smooth[Vector2i(bx, bz)]
+	var gx: float = (float(smooth.get(Vector2i(bx + 1, bz), h0))
+		- float(smooth.get(Vector2i(bx - 1, bz), h0))) * 0.5 / float(N)
+	var gz: float = (float(smooth.get(Vector2i(bx, bz + 1), h0))
+		- float(smooth.get(Vector2i(bx, bz - 1), h0))) * 0.5 / float(N)
+	return sqrt(gx * gx + gz * gz)
+
+
+## Matière de surface d'une colonne (GAME-1227) : l'herbe ne tient pas sur une
+## pente, et les sommets sont rocheux. La limite d'altitude est brouillée par un
+## bruit pour qu'elle ne dessine pas une ligne de niveau.
+func surface_material(col: Dictionary, slope: float, altitude: float,
+		cx: float, cz: float) -> int:
+	var limit := PTG.ROCK_ALTITUDE + _rock_noise.get_noise_2d(cx, cz) \
+		* PTG.ROCK_ALTITUDE_JITTER
+	if slope > PTG.SLOPE_ROCK or altitude > limit:
+		return PTG.MAT_ROCK
+	var base: int = col["surface"]
+	# Le sable et le permafrost restent eux-mêmes : de la terre à nu au milieu
+	# d'une dune ou d'une toundra n'aurait pas de sens.
+	if base == PTG.MAT_SAND or base == PTG.MAT_PERMAFROST:
+		return base
+	if slope > PTG.SLOPE_DIRT:
+		return PTG.MAT_DIRT
+	return base
+
+
 ## Amplitude du tramage pour ce bloc : maximale là où le terrain est plat (les
 ## paliers y sont larges), nulle dès que la pente les rend invisibles.
-func dither_amount(bx: int, bz: int, smooth: Dictionary) -> float:
+func dither_amount(slope: float) -> float:
 	if PTG.SURFACE_DITHER <= 0.0:
 		return 0.0
-	var h0: float = smooth[Vector2i(bx, bz)]
-	var gx: float = absf(float(smooth.get(Vector2i(bx + 1, bz), h0))
-		- float(smooth.get(Vector2i(bx - 1, bz), h0))) * 0.5
-	var gz: float = absf(float(smooth.get(Vector2i(bx, bz + 1), h0))
-		- float(smooth.get(Vector2i(bx, bz - 1), h0))) * 0.5
-	var slope := maxf(gx, gz) / float(N)
 	return PTG.SURFACE_DITHER * clampf(1.0 - slope, 0.0, 1.0)
 
 
@@ -330,21 +374,26 @@ func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
 	for bx in range(bx0, bx1 + 1):
 		for bz in range(bz0, bz1 + 1):
 			var col: Dictionary = column_data(bx, bz)
+			var slope := column_slope(bx, bz, smooth)
+			var dither := dither_amount(slope)
 			var snow: bool = col["snow"]
-			var dither := dither_amount(bx, bz, smooth)
 			for lx in N:
 				for lz in N:
 					tops[lx * N + lz] = sub_top(bx, bz, lx, lz, smooth, snow, dither)
 			var center_top: int = tops[N + 1]
+			var skin := surface_material(col, slope, float(center_top) * PTG.VOXEL_SIZE,
+				float(bx * N + 1), float(bz * N + 1))
+			# Pas de dalle de neige sur de la roche à nu : la pente l'emporte.
+			var slab := snow and skin != PTG.MAT_ROCK
 			for by in range(by0, by1 + 1):
 				if caves.get(Vector3i(bx, by, bz), false):
 					continue
 				if by * N > center_top + N:
 					continue
 				var ceiling := _ceiling_state(bx, by, bz, caves)
-				var material := _block_material(bx, by, bz, col, caves, center_top)
+				var material := _block_material(bx, by, bz, caves, center_top, skin)
 				_write_column_block(out_buffer, origin, bx, by, bz, tops, ceiling,
-					material, snow)
+					material, slab)
 
 
 ## Pente de plafond quand le bloc du dessous est creusé, sinon VIDE (= pas de
@@ -399,16 +448,16 @@ func _write_column_block(out_buffer: VoxelBuffer, origin: Vector3i,
 
 
 ## Matériau du bloc : biome en surface, terre, roche, minerai en profondeur.
-func _block_material(bx: int, by: int, bz: int, col: Dictionary, caves: Dictionary,
-		hs: int) -> int:
+func _block_material(bx: int, by: int, bz: int, caves: Dictionary,
+		hs: int, skin: int) -> int:
 	var center := by * N + 1
 	var depth := float(hs - center)
 	if depth <= PTG.TOP_LAYER / PTG.VOXEL_SIZE:
-		return col["surface"]
+		return skin
 	if depth <= PTG.SUB_DEPTH / PTG.VOXEL_SIZE:
-		if col["surface"] == PTG.MAT_SAND:
+		if skin == PTG.MAT_SAND:
 			return PTG.MAT_SAND
-		if col["surface"] == PTG.MAT_ROCK:
+		if skin == PTG.MAT_ROCK:
 			return PTG.MAT_ROCK
 		return PTG.MAT_DIRT
 	var near_cave := false
@@ -443,6 +492,17 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 	var caves := {}
 	var sub_depth := PTG.SUB_DEPTH / PTG.VOXEL_SIZE
 
+	# Première passe : la hauteur de chaque colonne échantillonnée. La pente se
+	# lit ensuite sur cette grille — à la résolution du niveau, qui est aussi
+	# celle du maillage lointain, donc gratuitement.
+	var grid := PackedFloat32Array()
+	grid.resize(size.x * size.z)
+	for ix in size.x:
+		var bxi := _block_of(origin.x + ix * step)
+		for iz in size.z:
+			var bzi := _block_of(origin.z + iz * step)
+			grid[ix * size.z + iz] = center_surface(_cached_column(bxi, bzi, columns))
+
 	for ix in size.x:
 		var wx := origin.x + ix * step
 		var bx := _block_of(wx)
@@ -450,7 +510,16 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 			var wz := origin.z + iz * step
 			var bz := _block_of(wz)
 			var col := _cached_column(bx, bz, columns)
-			var hs := center_surface(col)
+			var hs := grid[ix * size.z + iz]
+
+			var xa: float = grid[maxi(ix - 1, 0) * size.z + iz]
+			var xb: float = grid[mini(ix + 1, size.x - 1) * size.z + iz]
+			var za: float = grid[ix * size.z + maxi(iz - 1, 0)]
+			var zb: float = grid[ix * size.z + mini(iz + 1, size.z - 1)]
+			var gx := (xb - xa) * 0.5 / stepf
+			var gz := (zb - za) * 0.5 / stepf
+			var skin := surface_material(col, sqrt(gx * gx + gz * gz),
+				hs * PTG.VOXEL_SIZE, float(bx * N + 1), float(bz * N + 1))
 
 			# Indice, dans ce tampon, du dernier voxel sous la surface.
 			var top := int(floor((hs - float(origin.y)) / stepf))
@@ -465,15 +534,15 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 				out_buffer.set_voxel_f(clampf((wy - hs) / stepf, -1.0, 1.0),
 					ix, y, iz, VoxelBuffer.CHANNEL_SDF)
 
-			# Matériaux : roche en profondeur, matière du biome en surface.
+			# Matériaux : roche en profondeur, matière de surface par-dessus.
 			var hi := Vector3i(ix + 1, mini(top + 1, size.y), iz + 1)
 			if hi.y > 0:
 				out_buffer.fill_area(PTG.MAT_ROCK, Vector3i(ix, 0, iz), hi,
 					VoxelBuffer.CHANNEL_INDICES)
-				var skin := maxi(top - maxi(int(sub_depth / stepf), 1), 0)
-				out_buffer.fill_area(col["surface"], Vector3i(ix, skin, iz), hi,
+				var top_layer := maxi(top - maxi(int(sub_depth / stepf), 1), 0)
+				out_buffer.fill_area(skin, Vector3i(ix, top_layer, iz), hi,
 					VoxelBuffer.CHANNEL_INDICES)
-				if col["snow"] and top < size.y:
+				if col["snow"] and skin != PTG.MAT_ROCK and top < size.y:
 					out_buffer.fill_area(PTG.MAT_SNOW, Vector3i(ix, top, iz), hi,
 						VoxelBuffer.CHANNEL_INDICES)
 
@@ -485,7 +554,7 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 				var cave_key := Vector3i(bx, _block_of(origin.y + y * step), bz)
 				var carved = caves.get(cave_key)
 				if carved == null:
-					carved = cave_at(cave_key.x, cave_key.y, cave_key.z, float(col["hs"]))
+					carved = cave_at(cave_key.x, cave_key.y, cave_key.z, float(col["h"]))
 					caves[cave_key] = carved
 				if carved:
 					out_buffer.set_voxel_f(AIR, ix, y, iz, VoxelBuffer.CHANNEL_SDF)

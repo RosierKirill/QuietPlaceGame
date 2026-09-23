@@ -55,6 +55,12 @@ const ROOM_FREQUENCY := 0.02        # taille des salles
 const ROOM_THRESHOLD := 0.70         # plus haut = salles plus rares
 const CAVE_SMOOTHNESS := 1.5
 const SURFACE_CRUST := 8.0           # épaisseur de sol plein sous la surface
+# Entrées de grottes (GAME-1227) : un bruit de basse fréquence désigne des
+# taches où la croûte s'amincit jusqu'à disparaître. Un tunnel qui passe sous
+# une tache débouche donc à l'air libre.
+const ENTRANCE_FREQUENCY := 0.02     # taille des taches d'entrée
+const ENTRANCE_THRESHOLD := 0.78     # au-delà, la croûte commence à s'amincir
+const ENTRANCE_OPEN := 0.86          # au-delà, plus de croûte du tout
 
 # --- Minerais ---
 const ORE_FREQUENCY := 0.05          # taille des veines
@@ -75,8 +81,8 @@ const SUB_DEPTH := 4.0               # profondeur où commence la roche
 const ROCK_ALTITUDE := 110.0         # au-delà, sommets rocheux
 const ROCK_ALTITUDE_JITTER := 25.0   # irrégularité de cette limite (unités)
 const SLOPE_STEP := 1.0              # pas (unités) de la mesure de pente
-const SLOPE_DIRT := 1.5              # pente (tangente) au-delà : plus d'herbe
-const SLOPE_ROCK := 3.0              # pente au-delà : roche à nu
+const SLOPE_DIRT := 1.8              # pente (tangente) au-delà : plus d'herbe
+const SLOPE_ROCK := 2.6              # pente au-delà : roche à nu
 
 # --- Lissage du relief (GAME-1226) ---
 # Dosage de la passe de moyenne sur le champ de hauteur : 0 = aucun lissage,
@@ -242,6 +248,26 @@ static func make_room_noise() -> FastNoiseLite:
 	n.frequency = _freq(ROOM_FREQUENCY)
 	n.fractal_type = FastNoiseLite.FRACTAL_NONE
 	return n
+
+## Taches où la croûte s'amincit : c'est là que les grottes débouchent.
+static func make_entrance_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.seed = world_seed + 71
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.frequency = _freq(ENTRANCE_FREQUENCY)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
+
+## Irrégularité de la limite d'altitude des sommets rocheux.
+static func make_rock_noise() -> FastNoiseLite:
+	var n := FastNoiseLite.new()
+	n.seed = world_seed + 83
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.frequency = _freq(0.004)
+	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+	return n
+
 
 static func make_ore_noise() -> FastNoiseLite:
 	var n := FastNoiseLite.new()
