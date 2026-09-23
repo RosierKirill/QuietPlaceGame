@@ -21,6 +21,7 @@ const PlayerScene := preload("res://player/player.tscn")
 const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
 const WaterFieldScript := preload("res://world/water_field.gd")
 const WaterSurfaceScript := preload("res://world/water_surface.gd")
+const SkyEnvironmentScript := preload("res://world/sky_environment.gd")
 
 const LOD_COUNT := 7
 const LOD_DISTANCE := 128.0    # en voxels (= 32 unités de plein détail)
@@ -305,25 +306,8 @@ func _build_terrain() -> void:
 	_water.name = "WaterSurface"
 	add_child(_water)
 
+## Ciel et soleil : tout est dans SkyEnvironment, qui suit l'horloge du monde.
 func _build_environment() -> void:
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-55.0, -50.0, 0.0)
-	light.shadow_enabled = true
-	add_child(light)
-
-	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color(0.30, 0.55, 0.90)
-	sky_material.sky_horizon_color = Color(0.72, 0.84, 0.96)
-	sky_material.ground_horizon_color = Color(0.72, 0.84, 0.96)
-	sky_material.ground_bottom_color = Color(0.55, 0.60, 0.62)
-	var sky := Sky.new()
-	sky.sky_material = sky_material
-
-	var env := Environment.new()
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.5
-	var world_env := WorldEnvironment.new()
-	world_env.environment = env
-	add_child(world_env)
+	var sky := SkyEnvironmentScript.new()
+	sky.name = "SkyEnvironment"
+	add_child(sky)
