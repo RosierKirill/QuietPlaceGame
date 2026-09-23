@@ -40,6 +40,7 @@ extends CharacterBody3D
 @onready var _inventory: Inventory = $Inventory
 @onready var _need_effects: NeedEffects = $NeedEffects
 @onready var _hud: Hud = $Hud
+@onready var _swimmer: Swimmer = get_node_or_null("Swimmer") as Swimmer
 
 ## Transform de départ, point de réapparition par défaut.
 var _spawn_transform: Transform3D
@@ -70,6 +71,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# Dans l'eau, le nageur prend la main sur la gravité et le déplacement.
+	if _swimmer != null and _swimmer.update(delta):
+		move_and_slide()
+		return
+
 	_handle_jump()
 	_apply_gravity(delta)
 	_apply_horizontal_movement(delta)

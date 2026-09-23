@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://systems/survival/need.gd" id="10_need"]
 [ext_resource type="Script" path="res://systems/survival/need_effects.gd" id="11_effects"]
 [ext_resource type="Script" path="res://systems/survival/consumer.gd" id="12_consumer"]
+[ext_resource type="Script" path="res://systems/survival/swimmer.gd" id="13_swimmer"]
 
 [sub_resource type="StandardMaterial3D" id="Material_blade"]
 albedo_color = Color(0.81, 0.83, 0.86, 1)
@@ -99,6 +100,16 @@ max_value = 100.0
 decay_per_second = 0.55
 save_id = "player_thirst"
 
+[node name="Breath" type="Node" parent="."]
+script = ExtResource("10_need")
+id = &"breath"
+display_name = "Souffle"
+max_value = 100.0
+decay_per_second = 0.0
+
+[node name="Swimmer" type="Node" parent="."]
+script = ExtResource("13_swimmer")
+
 [node name="NeedEffects" type="Node" parent="."]
 script = ExtResource("11_effects")
 damage_per_second = 2.0
@@ -117,3 +128,4 @@ health_path = NodePath("../Health")
 energy_path = NodePath("../Energy")
 hunger_path = NodePath("../Hunger")
 thirst_path = NodePath("../Thirst")
+breath_path = NodePath("../Breath")

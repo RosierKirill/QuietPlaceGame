@@ -60,6 +60,16 @@ func fill(amount: float) -> void:
 	_set_value(current_value + amount)
 
 
+## Fait baisser le besoin de [param amount]. Pendant que [fill] sert à ce qui
+## restaure, celui-ci sert à ce qui consomme ponctuellement — le souffle sous
+## l'eau, par exemple — sans passer par la décroissance automatique.
+func drain(amount: float) -> void:
+	if amount <= 0.0:
+		return
+
+	_set_value(current_value - amount)
+
+
 ## Remet le besoin au maximum. Appelé à la réapparition.
 func restore() -> void:
 	_was_critical = false

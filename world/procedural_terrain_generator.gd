@@ -54,6 +54,11 @@ const CAVE_WIDTH := 0.11            # demi-largeur des bandes croisées
 const ROOM_FREQUENCY := 0.02        # taille des salles
 const ROOM_THRESHOLD := 0.70         # plus haut = salles plus rares
 const CAVE_SMOOTHNESS := 1.5
+# --- Eau (GAME-1232) ---
+# Niveau de la mer, en unités. Toute colonne dont le sol est en dessous est de
+# la mer. Le plancher du relief étant à ~1.9, une mer à 8 couvre 21 % du monde.
+const SEA_LEVEL := 8.0
+
 const SURFACE_CRUST := 8.0           # épaisseur de sol plein sous la surface
 # Entrées de grottes (GAME-1227) : un bruit de basse fréquence désigne des
 # taches où la croûte s'amincit jusqu'à disparaître. Un tunnel qui passe sous

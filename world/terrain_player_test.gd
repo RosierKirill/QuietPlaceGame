@@ -19,6 +19,8 @@ const ProceduralTerrainGenerator := preload("res://world/procedural_terrain_gene
 const TerrainEditing := preload("res://world/terrain_editing.gd")
 const PlayerScene := preload("res://player/player.tscn")
 const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
+const WaterFieldScript := preload("res://world/water_field.gd")
+const WaterSurfaceScript := preload("res://world/water_surface.gd")
 
 const LOD_COUNT := 7
 const LOD_DISTANCE := 128.0    # en voxels (= 32 unités de plein détail)
@@ -57,6 +59,9 @@ var _report_time := 0.0
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
 var _grace_left := 0.0
 var _loading: CanvasLayer
+## Nappe d'eau du monde et son maillage de surface.
+var _water_field
+var _water: Node3D
 
 func _ready() -> void:
 	if FIXED_SEED >= 0:
@@ -101,6 +106,7 @@ func _break_block() -> void:
 	if hit == null:
 		return
 	var picked := TerrainEditing.break_block(_voxel_tool, hit.position)
+	_water_ground_changed(hit.position)
 	if picked >= 0 and picked != _held_material:
 		_held_material = picked
 		print("[terrain] Matière en main : %s" % _material_name(picked))
@@ -110,8 +116,34 @@ func _place_block() -> void:
 	if hit == null:
 		return
 	if TerrainEditing.place_block(_voxel_tool, hit.previous_position, _held_material):
+		_water_ground_changed(hit.previous_position)
 		# GAME-1211 : si le bloc posé enferme le joueur, on le remonte.
 		_depenetrate_player()
+
+## Prévient la nappe qu'une colonne a changé de sol. Le générateur ignore les
+## modifications du joueur : on mesure donc le nouveau sol sur le terrain réel.
+func _water_ground_changed(voxel_position: Vector3i) -> void:
+	if _water_field == null:
+		return
+	var n: int = ProceduralTerrainGenerator.BLOCK_VOXELS
+	var bx := int(floor(float(voxel_position.x) / float(n)))
+	var bz := int(floor(float(voxel_position.z) / float(n)))
+	_water_field.ground_changed(bx, bz, _column_ground(bx, bz))
+
+
+## Sous-voxel plein le plus haut de la colonne, en partant au-dessus du sol
+## connu et en descendant. Retourne une hauteur en sous-voxels.
+func _column_ground(bx: int, bz: int) -> float:
+	var n: int = ProceduralTerrainGenerator.BLOCK_VOXELS
+	var vx := bx * n + 1
+	var vz := bz * n + 1
+	var top := int(_water_field.ground_at(bx, bz)) + 8
+	var bottom := top - 96
+	for y in range(top, bottom, -1):
+		if _voxel_tool.get_voxel_f(Vector3i(vx, y, vz)) < 0.0:
+			return float(y + 1)
+	return float(bottom)
+
 
 func _material_name(index: int) -> String:
 	var names: Array = ProceduralTerrainGenerator.MATERIAL_NAMES
@@ -245,6 +277,12 @@ func _spawn_player() -> void:
 	viewer.view_distance = VIEW_DISTANCE
 	_player.add_child(viewer)
 
+	if _water != null:
+		_water.setup(_water_field, _player, WaterMaterial.build())
+		var swimmer = _player.get_node_or_null("Swimmer")
+		if swimmer != null:
+			swimmer.set_water(_water)
+
 func _build_terrain() -> void:
 	_terrain = VoxelLodTerrain.new()
 	_terrain.name = "VoxelLodTerrain"
@@ -260,6 +298,12 @@ func _build_terrain() -> void:
 	_terrain.material = TerrainMaterial.build()
 	_voxel_tool = _terrain.get_voxel_tool()
 	_voxel_tool.channel = VoxelBuffer.CHANNEL_SDF
+
+	# L'eau lit le même générateur que le terrain : même relief, même graine.
+	_water_field = WaterFieldScript.new(_terrain.generator)
+	_water = WaterSurfaceScript.new()
+	_water.name = "WaterSurface"
+	add_child(_water)
 
 func _build_environment() -> void:
 	var light := DirectionalLight3D.new()

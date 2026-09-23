@@ -19,6 +19,8 @@ signal respawn_requested
 @export var hunger_path: NodePath
 ## Chemin vers le [Need] de soif.
 @export var thirst_path: NodePath
+## Chemin vers le [Need] de souffle. La barre ne s'affiche que sous l'eau.
+@export var breath_path: NodePath
 
 @onready var _interaction_prompt: Label = $InteractionPrompt
 @onready var _inventory_panel: InventoryPanel = $InventoryPanel
@@ -32,6 +34,7 @@ signal respawn_requested
 @onready var _energy_bar: ProgressBar = $Bars/EnergyBar
 @onready var _hunger_bar: ProgressBar = $Bars/HungerBar
 @onready var _thirst_bar: ProgressBar = $Bars/ThirstBar
+@onready var _breath_bar: ProgressBar = $Bars/BreathBar
 
 
 func _ready() -> void:
@@ -48,6 +51,14 @@ func _ready() -> void:
 	_bind_energy()
 	_bind_need(hunger_path, _hunger_bar)
 	_bind_need(thirst_path, _thirst_bar)
+	_bind_need(breath_path, _breath_bar)
+	# Le souffle ne s'affiche que quand il manque : hors de l'eau, il est plein
+	# et la barre n'apprend rien.
+	var breath := get_node_or_null(breath_path) as Need
+	if breath != null:
+		breath.need_changed.connect(func(current: float, maximum: float) -> void:
+			_breath_bar.visible = current < maximum - 0.01)
+		_breath_bar.visible = false
 
 
 func _bind_interaction_ray() -> void:
