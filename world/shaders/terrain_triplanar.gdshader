@@ -18,15 +18,18 @@ render_mode cull_back;
 //
 // Chaque matière s'affiche sur TOUTES les faces du bloc : l'herbe peut pousser
 // sur le côté d'un bloc, ce n'est plus réservé au dessus.
+//
+// GAME-1229 : une seule matière par fragment (la plus présente), pas de fondu.
 
-uniform sampler2D grass_tex : source_color, filter_linear_mipmap, repeat_enable;
-uniform sampler2D dirt_tex : source_color, filter_linear_mipmap, repeat_enable;
-uniform sampler2D rock_tex : source_color, filter_linear_mipmap, repeat_enable;
-uniform sampler2D sand_tex : source_color, filter_linear_mipmap, repeat_enable;
-uniform sampler2D snow_tex : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D grass_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dirt_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D sand_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D snow_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 
-// Taille des textures en mètres (plus petit = motif plus grand).
-uniform float texture_scale = 0.15;
+// Taille des textures : nombre de répétitions par unité. 1.3333 = une texture
+// par bloc de 0.75, comme une tuile de Minecraft par bloc.
+uniform float texture_scale = 1.3333;
 
 // Teintes par matériau (voir la liste ci-dessus).
 uniform vec3 tint_grass : source_color = vec3(1.0, 1.0, 1.0);
@@ -125,18 +128,19 @@ void fragment() {
 	float upness = clamp(n.y, 0.0, 1.0);
 	vec3 p = v_world_pos * texture_scale;
 
-	vec3 col = vec3(0.0);
-	float total = 0.0;
-	for (int i = 0; i < 4; i++) {
-		float w = v_weights[i];
-		if (w > 0.001) {
-			col += material_color(v_indices[i], p, n) * w;
-			total += w;
-		}
-	}
+	// On TRANCHE au lieu de fondre : la matière la plus présente gagne tout le
+	// fragment. Un mélange pondéré faisait flotter l'herbe en semi-transparence
+	// par-dessus la roche et la terre ; ici la limite est nette, comme dans un
+	// jeu en blocs.
+	float bw = v_weights[0];
+	float bi = v_indices[0];
+	if (v_weights[1] > bw) { bw = v_weights[1]; bi = v_indices[1]; }
+	if (v_weights[2] > bw) { bw = v_weights[2]; bi = v_indices[2]; }
+	if (v_weights[3] > bw) { bw = v_weights[3]; bi = v_indices[3]; }
 
-	if (total > 0.001) {
-		col /= total;
+	vec3 col;
+	if (bw > 0.001) {
+		col = material_color(bi, p, n);
 	} else {
 		col = geometric_color(p, n, upness);
 	}

@@ -29,6 +29,10 @@ const SOLID := -1.0
 const AIR := 1.0
 const N := 3                      # sous-voxels par bloc et par axe
 
+# Marge autour de la surface des grottes : au-delà, le bloc est franchement
+# plein ou franchement creusé et n'a pas besoin du test au sous-voxel.
+const CAVE_MARGIN := 0.22
+
 # Noyau binomial 1-2-1 de la passe de lissage (somme = 16).
 const KERNEL := [1, 2, 1, 2, 4, 2, 1, 2, 1]
 
@@ -114,8 +118,33 @@ func crust_voxels(cx: float, cz: float) -> float:
 	return full * clampf(1.0 - t, 0.0, 1.0)
 
 
-## Le bloc est-il creusé par une grotte ? Les bruits sont lus au centre du bloc,
-## donc constants sur tout le bloc : les grottes sont en blocs, comme la surface.
+## Densité de grotte en un point, en VOXELS : positive = creusé (GAME-1228).
+##
+## Le même champ que les grottes en blocs, mais CONTINU : on l'échantillonne aux
+## coins des blocs et on l'interpole au sous-voxel, comme Minecraft interpole
+## son bruit de grotte entre les coins de sa grille. Les galeries cessent d'être
+## un empilement de marches de 0.75 et les lèvres d'entrée ne laissent plus de
+## blocs suspendus.
+func cave_density(vx: float, vy: float, vz: float) -> float:
+	var a := PTG.CAVE_WIDTH - absf(_cave_a.get_noise_3d(vx, vy, vz))
+	var b := PTG.CAVE_WIDTH - absf(_cave_b.get_noise_3d(vx, vy, vz))
+	var room := _room_noise.get_noise_3d(vx, vy, vz) - PTG.ROOM_THRESHOLD
+	return maxf(minf(a, b), room)
+
+
+## Densité au coin (bx, by, bz) d'un bloc, mise en cache : chaque coin est
+## partagé par huit blocs.
+func _corner_density(cbx: int, cby: int, cbz: int, cache: Dictionary) -> float:
+	var key := Vector3i(cbx, cby, cbz)
+	var v = cache.get(key)
+	if v == null:
+		v = cave_density(float(cbx * N), float(cby * N), float(cbz * N))
+		cache[key] = v
+	return v
+
+
+## Le bloc est-il creusé par une grotte ? Version au centre du bloc, gardée pour
+## les LOD lointains, où le sous-voxel ne se voit pas.
 func cave_at(bx: int, by: int, bz: int, surface_v: float) -> bool:
 	var cx := float(bx * N + 1)
 	var cy := float(by * N + 1)
@@ -330,15 +359,13 @@ func _generate_block(out_buffer: VoxelBuffer, origin_in_voxels: Vector3i, lod: i
 
 ## LOD 0 : relief LISSÉ, avec une hauteur de sol par SOUS-COLONNE.
 ##
-## Deux règles empruntées à Terraria :
+## Trois règles empruntées à Terraria et à Minecraft :
 ##   - une passe de moyenne sur le champ de hauteur (voir smoothed_height) ;
-##   - la hauteur est ensuite lue au pas de 0.25 EN HORIZONTAL aussi : chacune
-##     des 9 sous-colonnes d'un bloc a sa propre hauteur, interpolée entre les
-##     colonnes voisines (voir sub_top). Les diagonales et les coins sortent
-##     tout seuls, et le mailleur lisse biseaute le reste.
-##
-## Les grottes restent raisonnées au bloc : leurs plafonds gardent les pentes du
-## catalogue.
+##   - la hauteur est lue au pas de 0.25 EN HORIZONTAL aussi : chacune des 9
+##     sous-colonnes d'un bloc a sa propre hauteur, interpolée entre les
+##     colonnes voisines (voir sub_top) ;
+##   - les grottes sont un champ continu interpolé entre les coins des blocs
+##     (voir cave_density), donc creusées au sous-voxel elles aussi.
 func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
 	var size := out_buffer.get_size()
 	var bx0 := _block_of(origin.x)
@@ -361,14 +388,7 @@ func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
 		for bz in range(bz0 - 1, bz1 + 2):
 			smooth[Vector2i(bx, bz)] = smoothed_height(bx, bz, heights)
 
-	# Grottes de la zone, plus une bordure : les plafonds regardent les voisins.
-	var caves := {}
-	for bx in range(bx0 - 1, bx1 + 2):
-		for bz in range(bz0 - 1, bz1 + 2):
-			var surface: float = smooth[Vector2i(bx, bz)]
-			for by in range(by0 - 1, by1 + 2):
-				caves[Vector3i(bx, by, bz)] = cave_at(bx, by, bz, surface)
-
+	var corners := {}
 	var tops := PackedInt32Array()
 	tops.resize(N * N)
 	for bx in range(bx0, bx1 + 1):
@@ -385,71 +405,98 @@ func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
 				float(bx * N + 1), float(bz * N + 1))
 			# Pas de dalle de neige sur de la roche à nu : la pente l'emporte.
 			var slab := snow and skin != PTG.MAT_ROCK
+			# Profondeur à partir de laquelle une grotte peut creuser ici.
+			var carve_limit := float(center_top) - crust_voxels(
+				float(bx * N + 1), float(bz * N + 1))
 			for by in range(by0, by1 + 1):
-				if caves.get(Vector3i(bx, by, bz), false):
-					continue
 				if by * N > center_top + N:
 					continue
-				var ceiling := _ceiling_state(bx, by, bz, caves)
-				var material := _block_material(bx, by, bz, caves, center_top, skin)
-				_write_column_block(out_buffer, origin, bx, by, bz, tops, ceiling,
-					material, slab)
-
-
-## Pente de plafond quand le bloc du dessous est creusé, sinon VIDE (= pas de
-## traitement particulier).
-func _ceiling_state(bx: int, by: int, bz: int, caves: Dictionary) -> int:
-	if not caves.get(Vector3i(bx, by - 1, bz), false):
-		return Shapes.VIDE
-	for d in 4:
-		var offset := Shapes.direction_offset(d)
-		if caves.get(Vector3i(bx + offset.x, by, bz + offset.y), false):
-			return Shapes.ceiling_slope(d)
-	return Shapes.VIDE
+				var dc := cave_density(float(bx * N + 1), float(by * N + 1),
+					float(bz * N + 1))
+				# Loin de toute grotte : le bloc se remplit d'un bloc, sans test.
+				var carving := dc > -CAVE_MARGIN and float(by * N + N) < carve_limit + float(N)
+				if dc > CAVE_MARGIN and float(by * N + N) < carve_limit:
+					continue    # entièrement creusé
+				var material := _block_material(bx, by, bz, center_top, skin, dc)
+				_write_column_block(out_buffer, origin, bx, by, bz, tops, material,
+					slab, carving, carve_limit, corners)
 
 
 ## Remplit un bloc sous-colonne par sous-colonne, jusqu'à la hauteur de chacune.
+## `carving` dit que ce bloc touche une grotte : il faut alors tester chaque
+## sous-voxel contre le champ interpolé plutôt que remplir la tranche d'un coup.
 func _write_column_block(out_buffer: VoxelBuffer, origin: Vector3i,
-		bx: int, by: int, bz: int, tops: PackedInt32Array, ceiling: int,
-		material: int, snow: bool) -> void:
+		bx: int, by: int, bz: int, tops: PackedInt32Array, material: int,
+		snow: bool, carving: bool, carve_limit: float, corners: Dictionary) -> void:
 	var size := out_buffer.get_size()
 	var base := by * N
+	var c000 := 0.0
+	var c100 := 0.0
+	var c010 := 0.0
+	var c110 := 0.0
+	var c001 := 0.0
+	var c101 := 0.0
+	var c011 := 0.0
+	var c111 := 0.0
+	if carving:
+		c000 = _corner_density(bx, by, bz, corners)
+		c100 = _corner_density(bx + 1, by, bz, corners)
+		c010 = _corner_density(bx, by + 1, bz, corners)
+		c110 = _corner_density(bx + 1, by + 1, bz, corners)
+		c001 = _corner_density(bx, by, bz + 1, corners)
+		c101 = _corner_density(bx + 1, by, bz + 1, corners)
+		c011 = _corner_density(bx, by + 1, bz + 1, corners)
+		c111 = _corner_density(bx + 1, by + 1, bz + 1, corners)
 	for lx in N:
 		var vx := bx * N + lx - origin.x
 		if vx < 0 or vx >= size.x:
 			continue
+		var tx := (float(lx) + 0.5) / float(N)
 		for lz in N:
 			var vz := bz * N + lz - origin.z
 			if vz < 0 or vz >= size.z:
 				continue
+			var tz := (float(lz) + 0.5) / float(N)
 			var top: int = tops[lx * N + lz]
-			var start := 0
-			if ceiling != Shapes.VIDE:
-				var span := Shapes.column_range(ceiling, lx, lz)
-				if span.y < span.x:
-					continue
-				start = span.x
-			var y0 := base + start - origin.y
-			var y1 := mini(base + N - 1, top - 1) - origin.y
-			y0 = maxi(y0, 0)
-			y1 = mini(y1, size.y - 1)
+			var y0 := base
+			var y1 := mini(base + N - 1, top - 1)
 			if y1 >= y0:
-				var lo := Vector3i(vx, y0, vz)
-				var hi := Vector3i(vx + 1, y1 + 1, vz + 1)
-				out_buffer.fill_area_f(SOLID, lo, hi, VoxelBuffer.CHANNEL_SDF)
-				out_buffer.fill_area(material, lo, hi, VoxelBuffer.CHANNEL_INDICES)
+				if carving:
+					# Densité interpolée sur les arêtes verticales de la colonne.
+					var d0 := lerpf(lerpf(c000, c100, tx), lerpf(c001, c101, tx), tz)
+					var d1 := lerpf(lerpf(c010, c110, tx), lerpf(c011, c111, tx), tz)
+					for y in range(y0, y1 + 1):
+						var ty := (float(y - base) + 0.5) / float(N)
+						if float(y) < carve_limit and lerpf(d0, d1, ty) > 0.0:
+							continue
+						_put(out_buffer, origin, vx, y, vz, size, material)
+				else:
+					var a0 := maxi(y0 - origin.y, 0)
+					var a1 := mini(y1 - origin.y, size.y - 1)
+					if a1 >= a0:
+						var lo := Vector3i(vx, a0, vz)
+						var hi := Vector3i(vx + 1, a1 + 1, vz + 1)
+						out_buffer.fill_area_f(SOLID, lo, hi, VoxelBuffer.CHANNEL_SDF)
+						out_buffer.fill_area(material, lo, hi, VoxelBuffer.CHANNEL_INDICES)
 			# Toundra : la dalle de neige, un sous-voxel posé sur le permafrost.
 			if not snow or top < base or top > base + N - 1:
 				continue
-			var ys := top - origin.y
-			if ys >= 0 and ys < size.y:
-				out_buffer.set_voxel_f(SOLID, vx, ys, vz, VoxelBuffer.CHANNEL_SDF)
-				out_buffer.set_voxel(PTG.MAT_SNOW, vx, ys, vz, VoxelBuffer.CHANNEL_INDICES)
+			_put(out_buffer, origin, vx, top, vz, size, PTG.MAT_SNOW)
+
+
+## Écrit un sous-voxel plein, si le tampon le contient.
+func _put(out_buffer: VoxelBuffer, origin: Vector3i, vx: int, y: int, vz: int,
+		size: Vector3i, material: int) -> void:
+	var vy := y - origin.y
+	if vy < 0 or vy >= size.y:
+		return
+	out_buffer.set_voxel_f(SOLID, vx, vy, vz, VoxelBuffer.CHANNEL_SDF)
+	out_buffer.set_voxel(material, vx, vy, vz, VoxelBuffer.CHANNEL_INDICES)
 
 
 ## Matériau du bloc : biome en surface, terre, roche, minerai en profondeur.
-func _block_material(bx: int, by: int, bz: int, caves: Dictionary,
-		hs: int, skin: int) -> int:
+func _block_material(bx: int, by: int, bz: int, hs: int, skin: int,
+		cave: float) -> int:
 	var center := by * N + 1
 	var depth := float(hs - center)
 	if depth <= PTG.TOP_LAYER / PTG.VOXEL_SIZE:
@@ -460,16 +507,8 @@ func _block_material(bx: int, by: int, bz: int, caves: Dictionary,
 		if skin == PTG.MAT_ROCK:
 			return PTG.MAT_ROCK
 		return PTG.MAT_DIRT
-	var near_cave := false
-	for d in 4:
-		var offset := Shapes.direction_offset(d)
-		if caves.get(Vector3i(bx + offset.x, by, bz + offset.y), false):
-			near_cave = true
-			break
-	if not near_cave:
-		near_cave = caves.get(Vector3i(bx, by - 1, bz), false) \
-			or caves.get(Vector3i(bx, by + 1, bz), false)
-	var ore := ore_at(bx, by, bz, depth, near_cave)
+	# Les veines de minerai suivent les parois : il suffit d'être près du champ.
+	var ore := ore_at(bx, by, bz, depth, cave > -CAVE_MARGIN)
 	return ore if ore >= 0 else PTG.MAT_ROCK
 
 
@@ -518,8 +557,9 @@ func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
 			var zb: float = grid[ix * size.z + mini(iz + 1, size.z - 1)]
 			var gx := (xb - xa) * 0.5 / stepf
 			var gz := (zb - za) * 0.5 / stepf
-			var skin := surface_material(col, sqrt(gx * gx + gz * gz),
-				hs * PTG.VOXEL_SIZE, float(bx * N + 1), float(bz * N + 1))
+			var slope := sqrt(gx * gx + gz * gz)
+			var skin := surface_material(col, slope, hs * PTG.VOXEL_SIZE,
+				float(bx * N + 1), float(bz * N + 1))
 
 			# Indice, dans ce tampon, du dernier voxel sous la surface.
 			var top := int(floor((hs - float(origin.y)) / stepf))

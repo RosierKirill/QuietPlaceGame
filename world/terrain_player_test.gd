@@ -21,7 +21,7 @@ const PlayerScene := preload("res://player/player.tscn")
 const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
 
 const LOD_COUNT := 7
-const LOD_DISTANCE := 72.0     # en voxels
+const LOD_DISTANCE := 128.0    # en voxels (= 32 unités de plein détail)
 const VIEW_DISTANCE := 800     # en voxels (= 200 unités)
 const COLLISION_LOD_COUNT := 1
 const SPAWN_LIFT := 3.0
