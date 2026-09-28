@@ -41,6 +41,8 @@ const COLLIDER_DISTANCE := 32.0
 const CLIMATE_FALLOFF := 0.05
 ## Hits already taken by a plant, stored on its collider.
 const HITS_META := &"hits_taken"
+## Above this many instances per terrain triangle, a species is "dense".
+const DENSE_PER_TRIANGLE := 0.05
 
 const GRASS_MATERIALS := [PTG.MAT_GRASS, PTG.MAT_GRASS_DRY, PTG.MAT_GRASS_COLD]
 
@@ -158,15 +160,22 @@ func _build_generator(species: PlantSpecies, filter: VoxelGraphFunction,
 		ground: PackedInt32Array) -> VoxelInstanceGenerator:
 	var voxel := PTG.VOXEL_SIZE
 	var gen := VoxelInstanceGenerator.new()
-	# Random triangles. EMIT_FROM_FACES walks the triangles in mesh order and
-	# drops its instances where an area counter overflows, which lines grass up
-	# in visible rows on the regular Transvoxel grid.
-	gen.emit_mode = VoxelInstanceGenerator.EMIT_FROM_FACES_FAST
-	# In this mode density = instances per triangle. On flat ground a
-	# Transvoxel triangle covers half a voxel at LOD 0, and 4 times more area
-	# at each LOD above.
-	var triangle_area := voxel * voxel * 0.5 * pow(4.0, species.lod_index)
-	gen.density = species.density * triangle_area
+	# On flat ground a Transvoxel triangle covers half a square voxel at LOD 0,
+	# and 4 times more at each LOD above; there is about one vertex per voxel.
+	var voxel_area := voxel * voxel * pow(4.0, species.lod_index)
+	var per_triangle := species.density * voxel_area * 0.5
+	if per_triangle >= DENSE_PER_TRIANGLE:
+		# Dense (grass): random triangles, count = density x triangle count.
+		# (EMIT_FROM_FACES walks the triangles in mesh order and drops its
+		# instances where an area counter overflows: grass lined up in rows.)
+		gen.emit_mode = VoxelInstanceGenerator.EMIT_FROM_FACES_FAST
+		gen.density = per_triangle
+	else:
+		# Sparse (trees, rocks, mushrooms): the count above is rounded down per
+		# terrain block, so a sparse species would get 0 on flat blocks. Here
+		# each vertex is kept with a probability instead: nothing is rounded.
+		gen.emit_mode = VoxelInstanceGenerator.EMIT_FROM_VERTICES
+		gen.density = species.density * voxel_area
 	gen.min_scale = species.min_scale / voxel
 	gen.max_scale = species.max_scale / voxel
 	gen.random_rotation = true

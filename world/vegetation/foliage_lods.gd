@@ -5,7 +5,8 @@ extends RefCounted
 ##
 ## Godot already simplifies solid parts on its own: the OBJ importer builds LOD
 ## index buffers with meshoptimizer (generate_lods), and Godot picks them by
-## distance, MultiMesh included. Those are kept here for solid surfaces.
+## distance, MultiMesh included. The copies made here get the same treatment
+## through ImporterMesh.generate_lods(), the function the importer uses.
 ##
 ## Foliage is the part Godot cannot simplify: leaves are separate flat cards,
 ## there is no edge to collapse, so its LODs stay at full detail. Here a far
@@ -15,15 +16,15 @@ extends RefCounted
 ## Copy of `mesh` where each foliage surface keeps one card out of
 ## `keep_one_in`. Materials are carried over.
 static func build(mesh: Mesh, foliage_surfaces: PackedInt32Array, keep_one_in: int) -> ArrayMesh:
-	var out := ArrayMesh.new()
+	var out := ImporterMesh.new()
 	for surface in mesh.get_surface_count():
 		var arrays := mesh.surface_get_arrays(surface)
 		if surface in foliage_surfaces:
-			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _thin_cards(arrays, keep_one_in))
-		else:
-			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], _godot_lods(mesh, surface))
-		out.surface_set_material(out.get_surface_count() - 1, mesh.surface_get_material(surface))
-	return out
+			arrays = _thin_cards(arrays, keep_one_in)
+		out.add_surface(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, mesh.surface_get_material(surface))
+	# Same angles as the importer's defaults (normal merge 60, split 25).
+	out.generate_lods(60.0, 25.0, [])
+	return out.get_mesh()
 
 
 ## Keeps one card out of `keep_one_in`, enlarged. A card is a group of
@@ -82,25 +83,6 @@ static func _thin_cards(arrays: Array, keep_one_in: int) -> Array:
 	result[Mesh.ARRAY_INDEX] = kept_triangles
 	return result
 
-
-## The LOD index buffers Godot generated at import for this surface, in the
-## form add_surface_from_arrays() takes: { edge length: indices }.
-static func _godot_lods(mesh: Mesh, surface: int) -> Dictionary:
-	var data: Dictionary = RenderingServer.mesh_get_surface(mesh.get_rid(), surface)
-	# Godot stores indices on 16 bits when the surface has few enough vertices.
-	var wide: bool = int(data.get("vertex_count", 0)) > 65536
-	var lods := {}
-	for lod in data.get("lods", []):
-		var bytes: PackedByteArray = lod["index_data"]
-		var lod_indices := PackedInt32Array()
-		if wide:
-			lod_indices = bytes.to_int32_array()
-		else:
-			lod_indices.resize(bytes.size() / 2)
-			for i in lod_indices.size():
-				lod_indices[i] = bytes.decode_u16(i * 2)
-		lods[float(lod["edge_length"])] = lod_indices
-	return lods
 
 
 static func _find(parent: PackedInt32Array, i: int) -> int:
