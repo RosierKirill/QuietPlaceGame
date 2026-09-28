@@ -8,18 +8,20 @@ extends RefCounted
 ## left holes without collision around him.
 ##
 ## Every formula here is mirrored in TerrainShape (point queries). Change both
-## together. Positions are in VOXELS; the graph is evaluated at whole voxel
-## positions.
+## together. Positions are in VOXELS.
 ##
 ## What the graph produces:
-##   - SURFACE: rolling hills + separate rocky massifs, quantized to whole
-##     voxels. The SDF is binary (-1 / +1): the Transvoxel mesher then gives the
-##     rounded-block look (faces at 0, 45 and 90 degrees).
+##   - SURFACE: rolling hills + separate rocky massifs. The SDF is the plain
+##     height field "y - height" (in voxels), continuous: the Transvoxel mesher
+##     turns it into a smooth surface. No quantization, no clamping: a
+##     continuous SDF is what the smooth mesher is designed for, and the mesh,
+##     its collider and the point queries all agree on the same surface.
 ##   - LAYERS: the top block (3 voxels) is grass (or the biome's surface), then
 ##     dirt, then stone. Steep slopes and high summits are bare rock.
 ##   - CAVES: crossing noise bands (tunnels) + rooms, kept under a solid crust
 ##     except at entrance spots, where tunnels widen to open cleanly.
-##   - CAVE WALLS are always stone, and ore veins follow them.
+##   - CAVE WALLS are always stone. Ores are not in the ground: they are ore
+##     rocks placed in caves by Vegetation (PlantSpecies with a tint_material).
 
 const PTG := preload("res://world/procedural_terrain_generator.gd")
 
@@ -40,7 +42,7 @@ static func build(noise_set: Dictionary) -> VoxelGeneratorGraph:
 	# SDF clipping skips blocks that are fully underground or fully in the air,
 	# but then it also skips their texture outputs: dug underground blocks would
 	# come out with material 0 (grass). Correct materials matter more here, so
-	# clipping is turned off with a threshold the binary SDF never reaches.
+	# clipping is turned off with a threshold the SDF never reaches.
 	graph.sdf_clip_threshold = 10000.0
 
 	var builder := TerrainGraph.new()
@@ -56,6 +58,21 @@ static func build(noise_set: Dictionary) -> VoxelGeneratorGraph:
 	return graph
 
 
+## Filter graph for VoxelInstancer (plants and rocks): X, Y, Z in, one value
+## out, positive where the species may grow. VoxelInstanceGenerator evaluates
+## it at every candidate position (terrain local space = voxels) and drops the
+## candidates where it is <= 0. See VoxelInstanceGenerator.noise_graph.
+##
+## Reuses the height and temperature formulas of the terrain, so plants follow
+## exactly the same climate as the ground materials.
+static func build_plant_filter(noise_set: Dictionary, species: PlantSpecies) -> VoxelGraphFunction:
+	var builder := TerrainGraph.new()
+	builder._g = VoxelGraphFunction.new()
+	builder._n = noise_set
+	builder._build_plant_filter(species)
+	return builder._g
+
+
 # --- Graph -------------------------------------------------------------------
 
 func _build() -> void:
@@ -64,29 +81,66 @@ func _build() -> void:
 	_z = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_Z, Vector2(0, 400)))
 
 	# --- Surface ---
-	var height := _height(_x, _z, true)
-	var top := _op(VoxelGraphFunction.NODE_FLOOR, [_op(VoxelGraphFunction.NODE_ADD, [height, 0.5])])
-	# Depth of this voxel under the surface: the top voxel of a column has 1.
-	var depth := _op(VoxelGraphFunction.NODE_SUBTRACT, [top, _y])
-	# Negative under the surface. Never 0: y and top are whole numbers.
-	var surface_sdf := _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_SUBTRACT, [_y, top]), 0.5])
+	var height := _height(_x, _z)
+	# Depth of this voxel under the surface, in voxels (negative in the air).
+	var depth := _op(VoxelGraphFunction.NODE_SUBTRACT, [height, _y])
+	# Height field SDF: negative under the surface.
+	var surface_sdf := _op(VoxelGraphFunction.NODE_SUBTRACT, [_y, height])
 
 	# --- Caves ---
 	var cave := _cave_field()
 	var cave_open := _cave_opening(cave, depth)
 
-	# Air if the surface OR the cave says air. Then made binary.
-	var carved := _op(VoxelGraphFunction.NODE_MULTIPLY, [cave_open, 100.0])
+	# Air if the surface OR the cave says air (union of the two air volumes).
+	# The cave field is scaled to about one unit per voxel so both terms of the
+	# max() have the same slope and the cave walls come out as smooth as the
+	# ground.
+	var carved := _op(VoxelGraphFunction.NODE_MULTIPLY, [cave_open, PTG.CAVE_SDF_SCALE])
 	var sdf := _op(VoxelGraphFunction.NODE_MAX, [surface_sdf, carved])
-	var binary := _op(VoxelGraphFunction.NODE_CLAMP, [_op(VoxelGraphFunction.NODE_MULTIPLY, [sdf, 1000.0]), -1.0, 1.0])
-	_op(VoxelGraphFunction.NODE_OUTPUT_SDF, [binary])
+	_op(VoxelGraphFunction.NODE_OUTPUT_SDF, [sdf])
 
 	# --- Materials ---
-	_op(VoxelGraphFunction.NODE_OUTPUT_SINGLE_TEXTURE, [_material(top, depth, cave, cave_open)])
+	_op(VoxelGraphFunction.NODE_OUTPUT_SINGLE_TEXTURE, [_material(height, depth, cave, cave_open)])
+
+
+func _build_plant_filter(species: PlantSpecies) -> void:
+	_x = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_X, Vector2(0, 0)))
+	_y = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_Y, Vector2(0, 200)))
+	_z = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_Z, Vector2(0, 400)))
+
+	var height := _height(_x, _z)
+	var t := _temperature(height)
+	var hu := _op(VoxelGraphFunction.NODE_CLAMP, [_unit_raw(_noise_2d("humidity", _x, _z)), 0.0, 1.0])
+
+	# Inside the climate ranges: every term is positive.
+	var terms: Array[Dictionary] = [
+		_op(VoxelGraphFunction.NODE_SUBTRACT, [t, species.temperature_min]),
+		_op(VoxelGraphFunction.NODE_SUBTRACT, [species.temperature_max, t]),
+		_op(VoxelGraphFunction.NODE_SUBTRACT, [hu, species.humidity_min]),
+		_op(VoxelGraphFunction.NODE_SUBTRACT, [species.humidity_max, hu]),
+	]
+
+	# Where: on the ground outside (and above the sea), or deep in a cave.
+	# These terms are in voxels, scaled down to the size of the climate terms.
+	var depth := _op(VoxelGraphFunction.NODE_SUBTRACT, [height, _y])
+	if species.location == PlantSpecies.Location.SURFACE:
+		terms.append(_op(VoxelGraphFunction.NODE_MULTIPLY, [
+			_op(VoxelGraphFunction.NODE_SUBTRACT, [PTG.PLANT_SURFACE_BAND_V, depth]), PTG.PLANT_FILTER_VOXEL]))
+		terms.append(_op(VoxelGraphFunction.NODE_MULTIPLY, [
+			_op(VoxelGraphFunction.NODE_SUBTRACT, [_y, PTG.SEA_LEVEL / PTG.VOXEL_SIZE]), PTG.PLANT_FILTER_VOXEL]))
+	else:
+		terms.append(_op(VoxelGraphFunction.NODE_MULTIPLY, [
+			_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, species.min_depth / PTG.VOXEL_SIZE]),
+			PTG.PLANT_FILTER_VOXEL]))
+
+	var value: Dictionary = terms[0]
+	for i in range(1, terms.size()):
+		value = _op(VoxelGraphFunction.NODE_MIN, [value, terms[i]])
+	_op(VoxelGraphFunction.NODE_OUTPUT_SDF, [value])
 
 
 ## Ground height in voxels at (x, z). Mirrored by TerrainShape.height_voxels().
-func _height(x: Dictionary, z: Dictionary, with_dither: bool) -> Dictionary:
+func _height(x: Dictionary, z: Dictionary) -> Dictionary:
 	var hills := _noise_2d("hills", x, z)
 	var mask := _op(VoxelGraphFunction.NODE_SMOOTHSTEP, [_noise_2d("mask", x, z)],
 		{"edge0": PTG.MASK_LOW, "edge1": PTG.MASK_HIGH})
@@ -97,11 +151,7 @@ func _height(x: Dictionary, z: Dictionary, with_dither: bool) -> Dictionary:
 	var plains := _op(VoxelGraphFunction.NODE_ADD, [
 		_op(VoxelGraphFunction.NODE_MULTIPLY, [hills, PTG.HILLS_AMPLITUDE / PTG.VOXEL_SIZE]),
 		PTG.BASE_HEIGHT / PTG.VOXEL_SIZE])
-	var h := _op(VoxelGraphFunction.NODE_ADD, [plains, mountains])
-	if with_dither:
-		var dither := _op(VoxelGraphFunction.NODE_MULTIPLY, [_noise_2d("dither", x, z), PTG.DITHER_AMPLITUDE_V])
-		h = _op(VoxelGraphFunction.NODE_ADD, [h, dither])
-	return h
+	return _op(VoxelGraphFunction.NODE_ADD, [plains, mountains])
 
 
 ## Raw cave field: positive inside a tunnel or a room.
@@ -159,19 +209,16 @@ func _material(top: Dictionary, depth: Dictionary, cave: Dictionary,
 	skin = _select(skin, PTG.MAT_ROCK, rockness, 0.0)
 	sub = _select(sub, PTG.MAT_ROCK, rockness, 0.0)
 
-	# Stone, with ore veins along cave walls.
-	var deep := _deep_material(depth, cave)
-
 	# Vertical rule: top block, then the sub layer, then stone.
-	var upper := _select(skin, sub, depth, float(PTG.TOP_LAYER_V) + 0.5)
-	var layered := _select(upper, deep, depth, PTG.SUB_DEPTH / PTG.VOXEL_SIZE + 0.5)
+	var upper := _select(skin, sub, depth, float(PTG.TOP_LAYER_V))
+	var layered := _select(upper, PTG.MAT_ROCK, depth, PTG.SUB_DEPTH / PTG.VOXEL_SIZE)
 
 	# Cave walls are stone: no grass or dirt inside caves. The top block is kept,
 	# so the lip of an entrance stays grassy like the ground around it.
 	var wall := _op(VoxelGraphFunction.NODE_MIN, [
 		_op(VoxelGraphFunction.NODE_ADD, [cave_open, PTG.CAVE_WALL_BAND]),
-		_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, float(PTG.TOP_LAYER_V) + 0.5])])
-	return _select(layered, deep, wall, 0.0)
+		_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, float(PTG.TOP_LAYER_V)])])
+	return _select(layered, PTG.MAT_ROCK, wall, 0.0)
 
 
 ## Temperature [0, 1], colder with altitude. Mirrored by TerrainShape.
@@ -186,9 +233,9 @@ func _temperature(top: Dictionary) -> Dictionary:
 ## Positive where the surface is bare rock (too steep, or too high).
 func _rockness(top: Dictionary) -> Dictionary:
 	var s := PTG.SLOPE_SAMPLE_V
-	var h0 := _height(_x, _z, false)
-	var hx := _height(_op(VoxelGraphFunction.NODE_ADD, [_x, s]), _z, false)
-	var hz := _height(_x, _op(VoxelGraphFunction.NODE_ADD, [_z, s]), false)
+	var h0 := _height(_x, _z)
+	var hx := _height(_op(VoxelGraphFunction.NODE_ADD, [_x, s]), _z)
+	var hz := _height(_x, _op(VoxelGraphFunction.NODE_ADD, [_z, s]))
 	var gx := _op(VoxelGraphFunction.NODE_MULTIPLY, [_op(VoxelGraphFunction.NODE_SUBTRACT, [hx, h0]), 1.0 / s])
 	var gz := _op(VoxelGraphFunction.NODE_MULTIPLY, [_op(VoxelGraphFunction.NODE_SUBTRACT, [hz, h0]), 1.0 / s])
 	var slope2 := _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_MULTIPLY, [gx, gx]), _op(VoxelGraphFunction.NODE_MULTIPLY, [gz, gz])])
@@ -200,19 +247,6 @@ func _rockness(top: Dictionary) -> Dictionary:
 	var high := _op(VoxelGraphFunction.NODE_SUBTRACT, [top, limit])
 	return _op(VoxelGraphFunction.NODE_MAX, [steep, high])
 
-
-## Stone, or an ore when a vein crosses a cave wall deep enough.
-func _deep_material(depth: Dictionary, cave: Dictionary) -> Dictionary:
-	var ore := _unit_raw(_noise_3d("ore"))
-	var kind := _unit_raw(_noise_3d("ore_type"))
-	var ore_kind := _select(PTG.MAT_COAL, _select(PTG.MAT_IRON, PTG.MAT_COPPER, kind, 0.62),
-		kind, 0.4)
-	var ore_mask := _op(VoxelGraphFunction.NODE_MIN, [
-		_op(VoxelGraphFunction.NODE_MIN, [
-			_op(VoxelGraphFunction.NODE_SUBTRACT, [ore, PTG.ORE_THRESHOLD]),
-			_op(VoxelGraphFunction.NODE_ADD, [cave, PTG.ORE_NEAR_CAVE])]),
-		_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, PTG.ORE_MIN_DEPTH / PTG.VOXEL_SIZE])])
-	return _select(PTG.MAT_ROCK, ore_kind, ore_mask, 0.0)
 
 
 # --- Helpers -------------------------------------------------------------------

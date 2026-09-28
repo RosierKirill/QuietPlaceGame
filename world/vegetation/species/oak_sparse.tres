@@ -1,0 +1,34 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/tree.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/models/textures/tree_bark_albedo.jpg" id="3_r"]
+[ext_resource type="Texture2D" path="res://assets/models/textures/branch.png" id="4_r"]
+[ext_resource type="Resource" path="res://items/wood.tres" id="5_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"oak_sparse"
+display_name = "Chêne (isolé)"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r"), ExtResource("4_r")])
+uv_scales = PackedVector2Array(2.6, 1.1, 1, 1)
+foliage_surfaces = PackedInt32Array(1)
+min_scale = 1.45
+max_scale = 2.7
+sink = 0.1
+ground_materials = PackedInt32Array(0, 1, 2, 3)
+temperature_min = 0.2
+temperature_max = 0.95
+humidity_min = 0.25
+humidity_max = 0.5
+density = 0.002
+max_slope_degrees = 30
+lod_index = 2
+hits = 6
+blocks_movement = true
+collider_radius = 0.22
+collider_height = 4
+loot = ExtResource("5_r")
+loot_min = 3
+loot_max = 5

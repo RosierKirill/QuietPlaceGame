@@ -41,10 +41,6 @@ const MASK_HIGH := 0.65              # raw mask value where they reach full heig
 const MOUNTAIN_AMPLITUDE := 130.0    # extra height of a full massif
 const MOUNTAIN_PERIOD := 260.0       # width of a peak
 const MOUNTAIN_OCTAVES := 5
-# Tiny white-noise offset on the surface: breaks the contour lines that
-# quantization draws on very gentle slopes. In voxels.
-const DITHER_AMPLITUDE_V := 0.4
-const DITHER_PERIOD_V := 2.0
 
 # --- Sea ---
 const SEA_LEVEL := 8.0
@@ -52,6 +48,9 @@ const SEA_LEVEL := 8.0
 # --- Caves (world units) ---
 const CAVE_PERIOD := 55.0            # size of tunnels
 const CAVE_WIDTH := 0.11             # half width of the crossing noise bands
+# Cave field -> SDF (voxels). The field changes by about 1/35 per voxel (noise
+# period of about 200 voxels), so this turns it into a distance in voxels.
+const CAVE_SDF_SCALE := 35.0
 const ROOM_PERIOD := 50.0            # size of rooms
 const ROOM_THRESHOLD := 0.70         # higher = rarer rooms
 const SURFACE_CRUST := 8.0           # solid ground kept above caves
@@ -68,13 +67,6 @@ const ENTRANCE_ROOF_V := 6.0         # depth (voxels) over which widening fades
 # cave walls: they are always rock, never grass or dirt.
 const CAVE_WALL_BAND := 0.06
 
-# --- Ores ---
-const ORE_PERIOD := 20.0             # size of veins
-const ORE_TYPE_PERIOD := 250.0       # coal / iron / copper regions
-const ORE_THRESHOLD := 0.55          # higher = rarer ores
-const ORE_NEAR_CAVE := 0.22          # veins follow cave walls
-const ORE_MIN_DEPTH := 10.0
-
 # --- Biomes ---
 const TEMPERATURE_PERIOD := 2500.0
 const HUMIDITY_PERIOD := 2000.0
@@ -90,6 +82,13 @@ const ROCK_NOISE_PERIOD := 250.0
 const SLOPE_ROCK := 1.6              # slope (tangent) above which rock shows
 const SLOPE_SAMPLE_V := 2.0          # distance used to measure the slope
 
+# --- Plants (see TerrainGraph.build_plant_filter) ---
+# Surface plants grow where the ground is at most this deep under them, in
+# voxels. Instances sit on the mesh, so this only absorbs placement error.
+const PLANT_SURFACE_BAND_V := 6.0
+# Weight of one voxel in the plant filter, next to climate rates in [0, 1].
+const PLANT_FILTER_VOXEL := 0.1
+
 # --- Materials (index written in the INDICES channel) ---
 const MAT_GRASS := 0                 # temperate grass
 const MAT_GRASS_DRY := 1             # dry grass (savanna, prairie)
@@ -98,6 +97,8 @@ const MAT_DIRT := 3
 const MAT_ROCK := 4
 const MAT_SAND := 5
 const MAT_SNOW := 6
+# Ores are no longer generated in the ground (ore rocks are, see Vegetation).
+# Their indices stay: blocks can still be placed, and they name the ore tints.
 const MAT_COAL := 7
 const MAT_IRON := 8
 const MAT_COPPER := 9
@@ -177,15 +178,14 @@ static func biome_thresholds_text() -> String:
 # --- Noises --------------------------------------------------------------------
 
 ## The noise resources of the current seed, created on first use.
-## Keys: hills, mask, mountain, dither, temperature, humidity, rock,
-## cave_a, cave_b, room, entrance, ore, ore_type.
+## Keys: hills, mask, mountain, temperature, humidity, rock,
+## cave_a, cave_b, room, entrance.
 static func noises() -> Dictionary:
 	if _noises.is_empty():
 		_noises = {
 			"hills": _noise(1, HILLS_PERIOD, HILLS_OCTAVES),
 			"mask": _noise(2, MASK_PERIOD, 2),
 			"mountain": _noise(3, MOUNTAIN_PERIOD, MOUNTAIN_OCTAVES),
-			"dither": _noise_voxels(4, DITHER_PERIOD_V, 1),
 			"temperature": _noise(10, TEMPERATURE_PERIOD, 1),
 			"humidity": _noise(11, HUMIDITY_PERIOD, 1),
 			"rock": _noise(12, ROCK_NOISE_PERIOD, 1),
@@ -193,8 +193,6 @@ static func noises() -> Dictionary:
 			"cave_b": _noise(21, CAVE_PERIOD, 1),
 			"room": _noise(30, ROOM_PERIOD, 1),
 			"entrance": _noise(31, ENTRANCE_PERIOD, 1),
-			"ore": _noise(40, ORE_PERIOD, 1),
-			"ore_type": _noise(41, ORE_TYPE_PERIOD, 1),
 		}
 	return _noises
 
@@ -258,14 +256,14 @@ static func shape():
 
 ## Height of the rendered ground at (x, z), in WORLD UNITS.
 static func get_height(x: float, z: float) -> float:
-	return (float(shape().top_voxels(x / VOXEL_SIZE, z / VOXEL_SIZE)) - 0.5) * VOXEL_SIZE
+	return shape().height_voxels(x / VOXEL_SIZE, z / VOXEL_SIZE) * VOXEL_SIZE
 
 ## Ground height of a block column, in voxels (used by the water).
 static func block_ground_voxels(bx: int, bz: int) -> float:
-	# The middle voxel of the block (a block is voxels 0, 1 and 2).
-	var vx := float(bx * BLOCK_VOXELS + 1)
-	var vz := float(bz * BLOCK_VOXELS + 1)
-	return float(shape().top_voxels(vx, vz)) - 0.5
+	# Measured at the centre of the block.
+	var vx := (float(bx) + 0.5) * BLOCK_VOXELS
+	var vz := (float(bz) + 0.5) * BLOCK_VOXELS
+	return shape().height_voxels(vx, vz)
 
 ## How open the crust is at (x, z): 0 = full crust, 1 = cave entrance.
 static func get_entrance_openness(x: float, z: float) -> float:

@@ -221,6 +221,13 @@ func _has_any_item() -> bool:
 	return false
 
 
+## Change le point de réapparition. Le monde généré l'appelle une fois le
+## joueur posé au sol : au _ready(), le joueur n'est pas encore placé (il est à
+## l'origine, sous le terrain, souvent dans une grotte).
+func set_spawn_point(spawn: Transform3D) -> void:
+	_spawn_transform = spawn
+
+
 ## Remet le joueur en jeu : retour au point d'apparition, jauges restaurées.
 ## Tout composant portant une méthode restore() est réinitialisé, ce qui
 ## couvrira la faim et la soif sans modifier ce code.

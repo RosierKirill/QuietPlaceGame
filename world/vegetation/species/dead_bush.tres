@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/bush.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/models/textures/leafless_branch.png" id="3_r"]
+[ext_resource type="Resource" path="res://items/wood.tres" id="4_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"dead_bush"
+display_name = "Buisson sec"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r")])
+foliage_surfaces = PackedInt32Array(0)
+min_scale = 0.5
+max_scale = 0.9
+sink = 0.1
+ground_materials = PackedInt32Array(5, 1)
+temperature_min = 0.35
+temperature_max = 1
+humidity_min = 0
+humidity_max = 0.35
+density = 0.01
+max_slope_degrees = 35
+lod_index = 1
+hits = 1
+collider_radius = 0.5
+collider_height = 0.7
+loot = ExtResource("4_r")
+loot_min = 1
+loot_max = 1

@@ -8,11 +8,14 @@ extends Node3D
 ##     until the whole full-detail area around the spawn is meshed and the
 ##     ground under the player has its collider. No timeout: the player is
 ##     never dropped into an unfinished world.
-##   - STREAMING GUARD: while playing, if the player reaches ground whose data
-##     or collider is not built yet, he is held in place until it is. He can
-##     neither fall through nor walk into a hole.
+##   - STREAMING GUARD: while playing, if the ground around the player is not
+##     meshed at full detail yet (so it has no collider), he is held in place
+##     until it is. The check is the terrain's own is_area_meshed(): it always
+##     ends up true while the player stands there, so he can never stay stuck.
 ##   - A dépénétration remonte le joueur s'il se retrouve dans la matière
 ##     (GAME-1211).
+##   - VÉGÉTATION : plantes et rochers posés par Vegetation (VoxelInstancer).
+##     Clic gauche sur une plante récoltable la frappe au lieu de creuser.
 ##   - CONSTRUCTION : clic gauche = casser le bloc visé (on ramasse son
 ##     matériau), clic droit = poser un bloc du matériau en main, aligné sur la
 ##     grille. Touches 1 à 9 : choisir la matière à poser.
@@ -55,8 +58,9 @@ const SPAWN_AREA_CELLS := 4
 const SPAWN_SEARCH_STEP := 24.0
 const SPAWN_SEARCH_RADIUS := 2000.0
 const SPAWN_MAX_SLOPE := 0.6        # tangent
-# Streaming guard: how far under the feet the ground is checked, in units.
-const GUARD_PROBE_DEPTH := 0.6
+# Streaming guard: area around the feet that must be meshed at full detail,
+# in voxels (half sizes): 4 units around, 4 units up and down.
+const GUARD_AREA_V := 16.0
 
 const EDIT_DISTANCE := 6.0     # portée de construction, en unités de monde
 
@@ -74,14 +78,13 @@ var _reported := false
 var _report_time := 0.0
 ## True while the streaming guard holds the player.
 var _held := false
-## Largest number of pending voxel tasks seen while loading (progress bar).
-var _max_pending := 0
 ## Matériau en main : celui du dernier bloc cassé (terre au départ).
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
 var _loading: CanvasLayer
 ## Nappe d'eau du monde et son maillage de surface.
 var _water_field
 var _water: Node3D
+var _vegetation: Vegetation
 
 func _ready() -> void:
 	if FIXED_SEED >= 0:
@@ -105,7 +108,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_break_block()
+			if not _harvest_aimed_plant():
+				_break_block()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_place_block()
 	elif event is InputEventKey and event.pressed and not event.echo:
@@ -120,6 +124,14 @@ func _aim() -> VoxelRaycastResult:
 	var dir := -_camera.global_transform.basis.z
 	var reach: float = EDIT_DISTANCE / ProceduralTerrainGenerator.VOXEL_SIZE
 	return _voxel_tool.raycast(origin, dir, reach)
+
+## Hits the plant in front of the camera, within reach. True if one was hit.
+func _harvest_aimed_plant() -> bool:
+	if _vegetation == null:
+		return false
+	var from := _camera.global_position
+	var to := from - _camera.global_transform.basis.z * EDIT_DISTANCE
+	return _vegetation.harvest_hit(from, to, [_player.get_rid()])
 
 func _break_block() -> void:
 	var hit := _aim()
@@ -239,40 +251,26 @@ func _begin_settle() -> void:
 
 ## Waits for a complete world around the spawn, then drops the player.
 ##
-## Three conditions, all required, no timeout:
+## Two conditions, both required:
 ##   1. every box of the spawn area has been meshed at full detail
 ##      (VoxelLodTerrain.is_area_meshed);
-##   2. the voxel engine has no work left: generation, meshing, streaming, and
-##      main-thread tasks (which include building colliders) — the whole view,
-##      every level of detail, is done (VoxelEngine.get_stats);
-##   3. a ray finds the collider of the ground under the player.
+##   2. a ray finds the collider of the ground under the player.
+## Only the area the player stands on is waited for: the rest of the view keeps
+## streaming in the background, which is how the voxel engine is meant to work
+## (waiting for the whole view to be idle could last forever).
 func _settle_step() -> void:
 	var p := _player.global_position
 	var surf := ProceduralTerrainGenerator.get_height(p.x, p.z)
 	var meshed := _spawn_area_meshed_ratio(Vector3(p.x, surf, p.z))
 	if meshed < 1.0:
-		_show_loading(meshed * 0.6, "Génération du terrain…")
+		_show_loading(meshed * 0.9, "Génération du terrain…")
 		return
 
-	var pending := _pending_voxel_tasks()
-	_max_pending = maxi(_max_pending, pending)
-	if pending > 0:
-		var done := 1.0 - float(pending) / float(maxi(_max_pending, 1))
-		_show_loading(0.6 + 0.35 * done, "Chargement des alentours…")
-		return
-
-	_show_loading(0.97, "Mise en place de la collision…")
+	_show_loading(0.95, "Mise en place de la collision…")
 	var hit := _ground_ray(Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
 		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
 	if not hit.is_empty():
 		_drop_player(float(hit.position.y) + DROP_MARGIN)
-
-
-## Tasks still queued in the voxel engine (all terrains).
-func _pending_voxel_tasks() -> int:
-	var tasks: Dictionary = VoxelEngine.get_stats().get("tasks", {})
-	return int(tasks.get("streaming", 0)) + int(tasks.get("generation", 0)) \
-		+ int(tasks.get("meshing", 0)) + int(tasks.get("main_thread", 0))
 
 
 ## Share of the spawn area already meshed at full detail, from 0 to 1.
@@ -313,6 +311,8 @@ func _drop_player(y: float) -> void:
 	# Au cas où la collision le coince dans un versant, on le dégage tout de suite.
 	_depenetrate_player()
 	if _loading != null and is_instance_valid(_loading):
+		# First landing: this is where the player comes back after dying.
+		_player.set_spawn_point(_player.global_transform)
 		_loading.finish()
 		_loading = null
 		# First time on the ground: the world is ready, time can run.
@@ -324,11 +324,14 @@ func _drop_player(y: float) -> void:
 
 ## Streaming guard, every physics frame while playing.
 ##
-## The player is held (no physics) when the ground around him is not ready:
-##   - its voxel data is not loaded yet (the area is not editable), or
-##   - the voxels say there is ground right under his feet but no collider has
-##     been built for it yet (he would fall through).
-## He is released as soon as both are ready.
+## The player is held (no physics) while the ground around him is not meshed
+## at full detail: colliders only exist on full-detail meshes, so walking there
+## could mean falling through. He is released as soon as the area is meshed.
+##
+## An earlier version probed the ground with physics rays and voxel reads. A
+## ray can miss through a seam of the collision mesh, and a held player never
+## moves, so nothing ever re-tested another point: the player stayed frozen
+## for good. is_area_meshed() has no such case.
 func _guard_streaming() -> void:
 	var ground_ready := _ground_ready_around_player()
 	if ground_ready == not _held:
@@ -340,19 +343,9 @@ func _guard_streaming() -> void:
 
 
 func _ground_ready_around_player() -> bool:
-	var feet := _player.global_position
-	var feet_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(feet).floor())
-	if not TerrainEditing.can_edit_quiet(_voxel_tool, feet_voxel):
-		return false
-	if _player.is_on_floor():
-		return true
-	# Falling or jumping: only a problem if there is ground just under the feet
-	# that the physics does not know about.
-	var below := feet + Vector3.DOWN * GUARD_PROBE_DEPTH
-	if not _is_solid_at(below):
-		return true
-	var hit := _ground_ray(feet + Vector3.UP * 0.5, below)
-	return not hit.is_empty()
+	var feet := ProceduralTerrainGenerator.to_voxel(_player.global_position)
+	var half := Vector3.ONE * GUARD_AREA_V
+	return _terrain.is_area_meshed(AABB(feet - half, half * 2.0), 0)
 
 
 ## Dry, flat enough, not over a cave entrance: the first such column on a
@@ -417,6 +410,12 @@ func _build_terrain() -> void:
 	_terrain.lod_count = LOD_COUNT
 	_terrain.lod_distance = LOD_DISTANCE
 	ProceduralTerrainGenerator.apply_scale(_terrain)
+	# Plants: set up before entering the tree, so the instancer starts with its
+	# library. It reads the noises of the seed drawn in _ready().
+	_vegetation = Vegetation.new()
+	_vegetation.name = "Vegetation"
+	_vegetation.setup(self)
+	_terrain.add_child(_vegetation)
 	add_child(_terrain)
 	_terrain.material = TerrainMaterial.build()
 	_voxel_tool = _terrain.get_voxel_tool()

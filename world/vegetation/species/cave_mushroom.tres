@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/mushroom.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/models/textures/mushroom.jpg" id="3_r"]
+[ext_resource type="Resource" path="res://items/mushroom.tres" id="4_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"cave_mushroom"
+display_name = "Cèpe (grotte)"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r")])
+min_scale = 0.8
+max_scale = 1.4
+sink = 0.01
+location = 1
+ground_materials = PackedInt32Array(4, 3)
+temperature_min = 0.1
+temperature_max = 0.9
+humidity_min = 0.35
+humidity_max = 1
+density = 0.05
+max_slope_degrees = 35
+lod_index = 0
+hits = 1
+collider_radius = 0.15
+collider_height = 0.25
+loot = ExtResource("4_r")
+loot_min = 1
+loot_max = 1

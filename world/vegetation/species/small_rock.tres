@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/small_rock.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/textures/terrain/rock_albedo.jpg" id="3_r"]
+[ext_resource type="Resource" path="res://items/stone.tres" id="4_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"small_rock"
+display_name = "Caillou"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r")])
+uv_scales = PackedVector2Array(0.8, 0.8)
+min_scale = 0.8
+max_scale = 1.6
+upright = false
+sink = 0.02
+ground_materials = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 10)
+temperature_min = 0
+temperature_max = 1
+humidity_min = 0
+humidity_max = 1
+density = 0.03
+max_slope_degrees = 60
+lod_index = 0
+hits = 2
+collider_radius = 0.14
+collider_height = 0.3
+loot = ExtResource("4_r")
+loot_min = 1
+loot_max = 1

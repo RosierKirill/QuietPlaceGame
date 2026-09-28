@@ -4,7 +4,7 @@ extends RefCounted
 ## un seul endroit qui connaît le shader et sa texture.
 
 const WATER_SHADER := preload("res://world/shaders/water.gdshader")
-const WATER_TEX := "res://assets/textures/terrain/water_albedo.jpg"
+const WATER_TEX := "res://assets/textures/water_albedo.jpg"
 
 
 static func build() -> ShaderMaterial:

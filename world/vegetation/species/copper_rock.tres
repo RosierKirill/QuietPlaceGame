@@ -1,0 +1,36 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/boulder.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/textures/terrain/rock_albedo.jpg" id="3_r"]
+[ext_resource type="Resource" path="res://items/copper_ore.tres" id="4_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"copper_rock"
+display_name = "Roche de cuivre"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r")])
+uv_scales = PackedVector2Array(2.2, 2.2)
+tint_material = 9
+min_scale = 0.5
+max_scale = 1
+upright = false
+sink = 0.3
+location = 1
+min_depth = 6
+ground_materials = PackedInt32Array(4, 3)
+temperature_min = 0
+temperature_max = 1
+humidity_min = 0
+humidity_max = 1
+density = 0.007
+max_slope_degrees = 45
+lod_index = 1
+hits = 8
+blocks_movement = true
+collider_radius = 0.5
+collider_height = 0.8
+loot = ExtResource("4_r")
+loot_min = 1
+loot_max = 2

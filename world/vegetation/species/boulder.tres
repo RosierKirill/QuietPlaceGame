@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PlantSpecies" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://world/vegetation/plant_species.gd" id="1_script"]
+[ext_resource type="Mesh" path="res://assets/models/boulder.obj" id="2_r"]
+[ext_resource type="Texture2D" path="res://assets/textures/terrain/rock_albedo.jpg" id="3_r"]
+[ext_resource type="Resource" path="res://items/stone.tres" id="4_r"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"boulder"
+display_name = "Rocher"
+mesh = ExtResource("2_r")
+textures = Array[Texture2D]([ExtResource("3_r")])
+uv_scales = PackedVector2Array(2.2, 2.2)
+min_scale = 0.7
+max_scale = 1.5
+upright = false
+sink = 0.35
+ground_materials = PackedInt32Array(4, 0, 1, 2, 5, 6)
+temperature_min = 0
+temperature_max = 1
+humidity_min = 0
+humidity_max = 1
+density = 0.002
+max_slope_degrees = 45
+lod_index = 2
+hits = 6
+blocks_movement = true
+collider_radius = 0.6
+collider_height = 1
+loot = ExtResource("4_r")
+loot_min = 2
+loot_max = 4
