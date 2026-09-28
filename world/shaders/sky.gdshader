@@ -28,7 +28,9 @@ uniform vec3 ground_color : source_color = vec3(0.24, 0.26, 0.28);
 group_uniforms Nuages;
 uniform float cloud_coverage : hint_range(0.0, 1.0) = 0.42;
 uniform float cloud_opacity : hint_range(0.0, 1.0) = 0.92;
-uniform float cloud_scale = 1.1;
+uniform float cloud_scale = 2.6;
+// Octaves of detail at the zenith (fewer towards the horizon).
+uniform int cloud_octaves : hint_range(4, 10) = 8;
 uniform float cloud_height = 700.0;
 uniform vec2 cloud_wind = vec2(0.004, 0.0015);
 uniform vec3 cloud_lit : source_color = vec3(1.0, 0.99, 0.96);
@@ -63,13 +65,15 @@ float value_noise(vec2 p) {
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Bruit fractal : cinq octaves, c'est le grain d'un cumulus.
-float fbm(vec2 p) {
+// Fractal noise. Each octave is rotated so the value-noise grid never lines
+// up from one octave to the next (that alignment shows as blocky patterns).
+float fbm(vec2 p, int octaves) {
+	const mat2 rotation = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8));
 	float value = 0.0;
 	float amplitude = 0.5;
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < octaves; i++) {
 		value += amplitude * value_noise(p);
-		p *= 2.03;
+		p = rotation * p * 2.03;
 		amplitude *= 0.5;
 	}
 	return value;
@@ -101,14 +105,25 @@ void sky() {
 	col += sun_color * pow(max(sun, 0.0), 8.0) * 0.22 * day_factor;
 
 	// Nuages : plan à cloud_height, vus en perspective.
+	//
+	// Detail: the old clouds had 5 octaves over a very large base scale; seen
+	// full screen, their finest detail was tens of pixels wide, which looked
+	// like a low-resolution texture. They now have cloud_octaves octaves over a
+	// finer base scale. The octave count drops towards the horizon, where the
+	// projection squeezes the plane and extra detail would only flicker, and in
+	// the radiance cubemap, which only feeds the ambient light.
 	if (up > 0.015) {
 		vec2 uv = dir.xz / up * (cloud_height * 0.0016 * cloud_scale) + cloud_wind * TIME;
-		float n = fbm(uv);
+		int octaves = int(mix(4.0, float(cloud_octaves), smoothstep(0.03, 0.35, up)));
+		if (AT_CUBEMAP_PASS) {
+			octaves = 4;
+		}
+		float n = fbm(uv, octaves);
 		float density = smoothstep(1.0 - cloud_coverage, 1.0 - cloud_coverage + 0.22, n);
 		// Relief : on compare au voisin situé vers le soleil. Plus le nuage
 		// monte de ce côté, plus il est éclairé.
 		vec2 towards_sun = normalize(-sun_direction.xz + vec2(0.001, 0.0));
-		float lit_sample = fbm(uv + towards_sun * 0.28);
+		float lit_sample = fbm(uv + towards_sun * 0.28, octaves);
 		float lit = clamp((n - lit_sample) * 2.5 + 0.5, 0.0, 1.0);
 		vec3 cloud = mix(cloud_shade, cloud_lit, lit);
 		// Au lever et au coucher, les nuages prennent la couleur du soleil.

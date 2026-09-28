@@ -41,6 +41,8 @@ void fragment() {
 	vec3 a = texture(water_tex, uv + vec2(t, t * 0.6)).rgb;
 	vec3 b = texture(water_tex, uv * -0.7 + vec2(-t * 0.8, t * 0.45)).rgb;
 	float ripple = (a.r + b.r) * 0.5;
+	// The water texture itself gives the colour of the surface.
+	vec3 water_color = (a + b) * 0.5;
 
 	// Normale perturbée à partir du gradient des deux couches.
 	vec2 slope = vec2(a.r - b.r, a.g - b.g) * wave_strength;
@@ -48,15 +50,27 @@ void fragment() {
 	NORMAL = normalize((VIEW_MATRIX * vec4(n, 0.0)).xyz);
 
 	// Profondeur d'eau sous ce fragment, lue dans le tampon de profondeur.
+	// Forward+ and Mobile use Vulkan NDCs, whose Z range is [0, 1]; only the
+	// Compatibility renderer uses [-1, 1] (Godot docs, "Advanced post-processing").
+	// The old code always remapped to [-1, 1]: the measured depth was wrong, so
+	// deep water stayed as transparent as a shallow shore.
 	float raw = texture(DEPTH_TEXTURE, SCREEN_UV).r;
-	vec4 view = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, raw * 2.0 - 1.0, 1.0);
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	vec3 ndc = vec3(SCREEN_UV, raw) * 2.0 - 1.0;
+#else
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, raw);
+#endif
+	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
 	view.xyz /= view.w;
 	float floor_distance = -view.z;
 	float surface_distance = -(VIEW_MATRIX * vec4(v_world_pos, 1.0)).z;
 	float thickness = max(floor_distance - surface_distance, 0.0);
 	float k = clamp(thickness / depth_fade, 0.0, 1.0);
 
-	ALBEDO = mix(shallow_color, deep_color, k) * (0.85 + 0.3 * ripple);
+	// Texture tinted by depth: shallow water keeps its own colour, deep water
+	// turns dark blue.
+	vec3 tint = mix(shallow_color, deep_color, k);
+	ALBEDO = mix(water_color * tint * 2.0, tint, k * 0.6) * (0.85 + 0.3 * ripple);
 	ALPHA = mix(shallow_alpha, deep_alpha, k);
 	ROUGHNESS = water_roughness;
 	METALLIC = 0.0;

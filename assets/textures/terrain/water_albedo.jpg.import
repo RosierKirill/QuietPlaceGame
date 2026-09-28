@@ -3,15 +3,16 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bxjib43kgk7g6"
-path="res://.godot/imported/water_albedo.jpg-2829a361981832ef2dd1a8c9b708c63a.ctex"
+path.s3tc="res://.godot/imported/water_albedo.jpg-2829a361981832ef2dd1a8c9b708c63a.s3tc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/textures/terrain/water_albedo.jpg"
-dest_files=["res://.godot/imported/water_albedo.jpg-2829a361981832ef2dd1a8c9b708c63a.ctex"]
+dest_files=["res://.godot/imported/water_albedo.jpg-2829a361981832ef2dd1a8c9b708c63a.s3tc.ctex"]
 
 [params]
 

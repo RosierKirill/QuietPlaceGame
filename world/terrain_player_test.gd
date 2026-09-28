@@ -4,10 +4,15 @@ extends Node3D
 ##   - Le terrain est à l'échelle de la grille : 1 voxel = 0.25 unité, 1 bloc
 ##     = 0.75 unité. Les coordonnées du VoxelTool sont donc LOCALES (voxels),
 ##     jamais celles du monde : on convertit avec ProceduralTerrainGenerator.
-##   - SPAWN : le joueur reste hors-physique tant que la collision du chunk
-##     sous lui n'est pas prête (GAME-1210). Le filet anti-chute ne sert que de
-##     secours (GAME-1204), et une dépénétration remonte le joueur s'il se
-##     retrouve dans la matière (GAME-1211).
+##   - SPAWN: the player appears in a COMPLETE world. The loading screen stays
+##     until the whole full-detail area around the spawn is meshed and the
+##     ground under the player has its collider. No timeout: the player is
+##     never dropped into an unfinished world.
+##   - STREAMING GUARD: while playing, if the player reaches ground whose data
+##     or collider is not built yet, he is held in place until it is. He can
+##     neither fall through nor walk into a hole.
+##   - A dépénétration remonte le joueur s'il se retrouve dans la matière
+##     (GAME-1211).
 ##   - CONSTRUCTION : clic gauche = casser le bloc visé (on ramasse son
 ##     matériau), clic droit = poser un bloc du matériau en main, aligné sur la
 ##     grille. Touches 1 à 9 : choisir la matière à poser.
@@ -22,6 +27,7 @@ const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
 const WaterFieldScript := preload("res://world/water_field.gd")
 const WaterSurfaceScript := preload("res://world/water_surface.gd")
 const SkyEnvironmentScript := preload("res://world/sky_environment.gd")
+const UnderwaterEffectScript := preload("res://world/underwater_effect.gd")
 
 const LOD_COUNT := 7
 const LOD_DISTANCE := 128.0    # en voxels (= 32 unités de plein détail)
@@ -29,17 +35,28 @@ const VIEW_DISTANCE := 800     # en voxels (= 200 unités)
 const COLLISION_LOD_COUNT := 1
 const SPAWN_LIFT := 3.0
 const DROP_MARGIN := 0.2
-const SCAN_TOP := 400.0
-const SCAN_BOTTOM := -400.0
-const SPAWN_TIMEOUT := 20.0
 const FALL_LIMIT := -120.0
 ## Graine fixe pour rejouer un monde ; -1 = graine tirée au hasard.
 const FIXED_SEED := -1
-## Le filet anti-chute ne vaut que pendant ces premières secondes au sol :
-## après, être sous la surface veut simplement dire qu'on explore une grotte.
-const SPAWN_GRACE := 6.0
 ## Tolérance (unités) entre la hauteur analytique et la collision trouvée.
 const SURFACE_TOLERANCE := 3.0
+
+# Spawn area that must be meshed at full detail before the player appears, in
+# voxels (half sizes): 16 units around him, 8 up and down. It must fit inside
+# the full-detail sphere (LOD_DISTANCE = 128 voxels), otherwise its corners
+# would be meshed at a lower level and never reported as done at level 0:
+# sqrt(64² + 64² + 32²) = 96 < 128.
+const SPAWN_AREA_V := 64.0
+const SPAWN_AREA_HEIGHT_V := 32.0
+# The area is checked as SPAWN_AREA_CELLS x SPAWN_AREA_CELLS boxes, which also
+# gives the progress shown on the loading screen.
+const SPAWN_AREA_CELLS := 4
+# Spawn search: spiral of candidate columns around the origin, in units.
+const SPAWN_SEARCH_STEP := 24.0
+const SPAWN_SEARCH_RADIUS := 2000.0
+const SPAWN_MAX_SLOPE := 0.6        # tangent
+# Streaming guard: how far under the feet the ground is checked, in units.
+const GUARD_PROBE_DEPTH := 0.6
 
 const EDIT_DISTANCE := 6.0     # portée de construction, en unités de monde
 
@@ -53,12 +70,14 @@ var _camera: Camera3D
 var _terrain: VoxelLodTerrain
 var _voxel_tool: VoxelTool
 var _grounded := false
-var _elapsed := 0.0
 var _reported := false
 var _report_time := 0.0
+## True while the streaming guard holds the player.
+var _held := false
+## Largest number of pending voxel tasks seen while loading (progress bar).
+var _max_pending := 0
 ## Matériau en main : celui du dernier bloc cassé (terre au départ).
 var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
-var _grace_left := 0.0
 var _loading: CanvasLayer
 ## Nappe d'eau du monde et son maillage de surface.
 var _water_field
@@ -179,82 +198,114 @@ func _depenetrate_player() -> void:
 			push_warning("[terrain_player] Dépénétration : limite atteinte.")
 
 func _physics_process(delta: float) -> void:
-	if _grounded:
-		var p0 := _player.global_position
-		# Secours des premières secondes seulement : passé ce délai, être sous
-		# la surface signifie simplement qu'on explore une grotte.
-		_grace_left = maxf(_grace_left - delta, 0.0)
-		var surf := ProceduralTerrainGenerator.get_height(p0.x, p0.z)
-		if _grace_left > 0.0 and not _player.is_on_floor() and _player.velocity.y < 0.0 \
-				and p0.y < surf - 2.0:
-			_begin_settle()
-			return
-		if p0.y < FALL_LIMIT:
-			_begin_settle()
-			return
-		if not _reported:
-			_report_time += delta
-			if _report_time >= 1.0:
-				_reported = true
-				var biome: int = ProceduralTerrainGenerator.get_biome(p0.x, p0.z)
-				print("[terrain_player] DIAG 1s : au sol=%s, y=%.1f, biome=%s" % [
-					str(_player.is_on_floor()), p0.y,
-					ProceduralTerrainGenerator.BIOME_NAMES[biome]])
+	if not _grounded:
+		_settle_step()
 		return
-	_settle_step(delta)
+	_guard_streaming()
+	var p0 := _player.global_position
+	if p0.y < FALL_LIMIT:
+		push_warning("[terrain_player] Joueur sous la limite du monde : retour à la surface.")
+		_begin_settle()
+		return
+	if not _reported:
+		_report_time += delta
+		if _report_time >= 1.0:
+			_reported = true
+			var biome: int = ProceduralTerrainGenerator.get_biome(p0.x, p0.z)
+			print("[terrain_player] DIAG 1s : au sol=%s, y=%.1f, biome=%s" % [
+				str(_player.is_on_floor()), p0.y,
+				ProceduralTerrainGenerator.BIOME_NAMES[biome]])
+
+
+func _exit_tree() -> void:
+	# Leaving the world by any path: the clock must not keep running.
+	TimeOfDay.stop_clock()
+
 
 func _surface_wait_pos(x: float, z: float) -> Vector3:
 	return Vector3(x, ProceduralTerrainGenerator.get_height(x, z) + SPAWN_LIFT, z)
 
+
+## Holds the player above the ground of his column until it is ready again.
 func _begin_settle() -> void:
 	_grounded = false
-	_elapsed = 0.0
 	_reported = false
 	_report_time = 0.0
 	var p := _player.global_position
 	_player.global_position = _surface_wait_pos(p.x, p.z)
 	_player.velocity = Vector3.ZERO
 	_player.set_physics_process(false)
-	push_warning("[terrain_player] Rattrapage anti-chute : le joueur était passé sous le terrain.")
 
-func _settle_step(delta: float) -> void:
-	# GAME-1210 : on attend que la collision existe vraiment SOUS LA SURFACE
-	# avant de rendre la physique au joueur. Le rayon ne balaie qu'une fenêtre
-	# autour de la hauteur analytique : sinon, un plafond de grotte chargé avant
-	# le sol ferait apparaître le joueur sous terre.
-	_elapsed += delta
+
+## Waits for a complete world around the spawn, then drops the player.
+##
+## Three conditions, all required, no timeout:
+##   1. every box of the spawn area has been meshed at full detail
+##      (VoxelLodTerrain.is_area_meshed);
+##   2. the voxel engine has no work left: generation, meshing, streaming, and
+##      main-thread tasks (which include building colliders) — the whole view,
+##      every level of detail, is done (VoxelEngine.get_stats);
+##   3. a ray finds the collider of the ground under the player.
+func _settle_step() -> void:
 	var p := _player.global_position
 	var surf := ProceduralTerrainGenerator.get_height(p.x, p.z)
-	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(
-		Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
-		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
-	query.exclude = [_player.get_rid()]
-	_update_loading(surf)
-	var hit := space.intersect_ray(query)
-	if hit:
-		_drop_player(float(hit.position.y) + DROP_MARGIN)
-	elif _elapsed >= SPAWN_TIMEOUT:
-		push_warning("[terrain_player] Collision toujours absente : pose sur la hauteur calculée.")
-		_drop_player(surf + DROP_MARGIN)
+	var meshed := _spawn_area_meshed_ratio(Vector3(p.x, surf, p.z))
+	if meshed < 1.0:
+		_show_loading(meshed * 0.6, "Génération du terrain…")
+		return
 
-## Avancement affiché : les voxels d'abord, la collision ensuite.
-func _update_loading(surf: float) -> void:
+	var pending := _pending_voxel_tasks()
+	_max_pending = maxi(_max_pending, pending)
+	if pending > 0:
+		var done := 1.0 - float(pending) / float(maxi(_max_pending, 1))
+		_show_loading(0.6 + 0.35 * done, "Chargement des alentours…")
+		return
+
+	_show_loading(0.97, "Mise en place de la collision…")
+	var hit := _ground_ray(Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
+		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
+	if not hit.is_empty():
+		_drop_player(float(hit.position.y) + DROP_MARGIN)
+
+
+## Tasks still queued in the voxel engine (all terrains).
+func _pending_voxel_tasks() -> int:
+	var tasks: Dictionary = VoxelEngine.get_stats().get("tasks", {})
+	return int(tasks.get("streaming", 0)) + int(tasks.get("generation", 0)) \
+		+ int(tasks.get("meshing", 0)) + int(tasks.get("main_thread", 0))
+
+
+## Share of the spawn area already meshed at full detail, from 0 to 1.
+func _spawn_area_meshed_ratio(center_world: Vector3) -> float:
+	var center := ProceduralTerrainGenerator.to_voxel(center_world)
+	var cell := SPAWN_AREA_V * 2.0 / float(SPAWN_AREA_CELLS)
+	var origin := center - Vector3(SPAWN_AREA_V, SPAWN_AREA_HEIGHT_V, SPAWN_AREA_V)
+	var size := Vector3(cell, SPAWN_AREA_HEIGHT_V * 2.0, cell)
+	var done := 0
+	for ix in SPAWN_AREA_CELLS:
+		for iz in SPAWN_AREA_CELLS:
+			var box := AABB(origin + Vector3(ix * cell, 0.0, iz * cell), size)
+			if _terrain.is_area_meshed(box, 0):
+				done += 1
+	return float(done) / float(SPAWN_AREA_CELLS * SPAWN_AREA_CELLS)
+
+
+func _show_loading(progress: float, status: String) -> void:
 	if _loading == null or not is_instance_valid(_loading):
 		return
-	# La barre avance déjà avec le temps, pour ne jamais paraître figée.
-	_loading.set_progress(minf(_elapsed / SPAWN_TIMEOUT, 0.85) * 0.5)
-	var spawn_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(
-		Vector3(_player.global_position.x, surf, _player.global_position.z)))
-	if TerrainEditing.can_edit_quiet(_voxel_tool, spawn_voxel):
-		_loading.set_progress(0.7)
-		_loading.set_status("Mise en place de la collision…")
-	else:
-		_loading.set_status("Génération du terrain…")
+	_loading.set_progress(progress)
+	_loading.set_status(status)
+
+
+## Physics ray against the terrain, ignoring the player. Empty if nothing.
+func _ground_ray(from: Vector3, to: Vector3) -> Dictionary:
+	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.exclude = [_player.get_rid()]
+	return get_world_3d().direct_space_state.intersect_ray(query)
+
 
 func _drop_player(y: float) -> void:
 	_grounded = true
-	_grace_left = SPAWN_GRACE
 	var p := _player.global_position
 	_player.global_position = Vector3(p.x, y, p.z)
 	_player.velocity = Vector3.ZERO
@@ -263,15 +314,82 @@ func _drop_player(y: float) -> void:
 	_depenetrate_player()
 	if _loading != null and is_instance_valid(_loading):
 		_loading.finish()
+		_loading = null
+		# First time on the ground: the world is ready, time can run.
+		TimeOfDay.start_clock()
 	print("[terrain_player] Joueur posé au sol à y=%.1f (biome %s)" % [
 		_player.global_position.y,
 		ProceduralTerrainGenerator.BIOME_NAMES[ProceduralTerrainGenerator.get_biome(p.x, p.z)]])
+
+
+## Streaming guard, every physics frame while playing.
+##
+## The player is held (no physics) when the ground around him is not ready:
+##   - its voxel data is not loaded yet (the area is not editable), or
+##   - the voxels say there is ground right under his feet but no collider has
+##     been built for it yet (he would fall through).
+## He is released as soon as both are ready.
+func _guard_streaming() -> void:
+	var ground_ready := _ground_ready_around_player()
+	if ground_ready == not _held:
+		return
+	_held = not ground_ready
+	if _held:
+		_player.velocity = Vector3.ZERO
+	_player.set_physics_process(ground_ready)
+
+
+func _ground_ready_around_player() -> bool:
+	var feet := _player.global_position
+	var feet_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(feet).floor())
+	if not TerrainEditing.can_edit_quiet(_voxel_tool, feet_voxel):
+		return false
+	if _player.is_on_floor():
+		return true
+	# Falling or jumping: only a problem if there is ground just under the feet
+	# that the physics does not know about.
+	var below := feet + Vector3.DOWN * GUARD_PROBE_DEPTH
+	if not _is_solid_at(below):
+		return true
+	var hit := _ground_ray(feet + Vector3.UP * 0.5, below)
+	return not hit.is_empty()
+
+
+## Dry, flat enough, not over a cave entrance: the first such column on a
+## spiral around the origin. The same seed always gives the same spawn.
+func _find_spawn_column() -> Vector2:
+	var sea := ProceduralTerrainGenerator.SEA_LEVEL
+	var radius := 0.0
+	while radius <= SPAWN_SEARCH_RADIUS:
+		var steps := maxi(1, int(TAU * radius / SPAWN_SEARCH_STEP))
+		for i in steps:
+			var angle := TAU * float(i) / float(steps)
+			var x := cos(angle) * radius
+			var z := sin(angle) * radius
+			if _is_good_spawn(x, z, sea):
+				return Vector2(x, z)
+		radius += SPAWN_SEARCH_STEP
+	push_warning("[terrain_player] Aucune colonne de spawn idéale trouvée : origine.")
+	return Vector2.ZERO
+
+
+func _is_good_spawn(x: float, z: float, sea: float) -> bool:
+	var h := ProceduralTerrainGenerator.get_height(x, z)
+	if h < sea + 1.0:
+		return false
+	if ProceduralTerrainGenerator.get_entrance_openness(x, z) > 0.0:
+		return false
+	var dx := ProceduralTerrainGenerator.get_height(x + 1.0, z) - h
+	var dz := ProceduralTerrainGenerator.get_height(x, z + 1.0) - h
+	return sqrt(dx * dx + dz * dz) <= SPAWN_MAX_SLOPE
+
 
 func _spawn_player() -> void:
 	_player = PlayerScene.instantiate()
 	add_child(_player)
 	_camera = _player.get_node("CameraPivot/Camera3D")
-	_player.global_position = _surface_wait_pos(0.0, 0.0)
+	var spawn := _find_spawn_column()
+	_player.global_position = _surface_wait_pos(spawn.x, spawn.y)
 	_player.set_physics_process(false)
 	var viewer := VoxelViewer.new()
 	viewer.requires_collisions = true
@@ -283,6 +401,10 @@ func _spawn_player() -> void:
 		var swimmer = _player.get_node_or_null("Swimmer")
 		if swimmer != null:
 			swimmer.set_water(_water)
+		var underwater := UnderwaterEffectScript.new()
+		underwater.name = "UnderwaterEffect"
+		_camera.add_child(underwater)
+		underwater.setup(_camera, _water)
 
 func _build_terrain() -> void:
 	_terrain = VoxelLodTerrain.new()
@@ -300,8 +422,8 @@ func _build_terrain() -> void:
 	_voxel_tool = _terrain.get_voxel_tool()
 	_voxel_tool.channel = VoxelBuffer.CHANNEL_SDF
 
-	# L'eau lit le même générateur que le terrain : même relief, même graine.
-	_water_field = WaterFieldScript.new(_terrain.generator)
+	# The water reads the same ground as the terrain graph (same seed).
+	_water_field = WaterFieldScript.new()
 	_water = WaterSurfaceScript.new()
 	_water.name = "WaterSurface"
 	add_child(_water)

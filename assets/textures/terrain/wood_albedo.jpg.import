@@ -3,15 +3,16 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://v7fhcgao1i0y"
-path="res://.godot/imported/wood_albedo.jpg-cab0e5b0033cb5dbec321daff74cdcf9.ctex"
+path.s3tc="res://.godot/imported/wood_albedo.jpg-cab0e5b0033cb5dbec321daff74cdcf9.s3tc.ctex"
 metadata={
-"vram_texture": false
+"imported_formats": ["s3tc_bptc"],
+"vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/textures/terrain/wood_albedo.jpg"
-dest_files=["res://.godot/imported/wood_albedo.jpg-cab0e5b0033cb5dbec321daff74cdcf9.ctex"]
+dest_files=["res://.godot/imported/wood_albedo.jpg-cab0e5b0033cb5dbec321daff74cdcf9.s3tc.ctex"]
 
 [params]
 

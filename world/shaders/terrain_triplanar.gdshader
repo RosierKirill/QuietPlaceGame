@@ -63,7 +63,43 @@ vec4 decode_8bit_vec4(float v) {
 		float((i >> 24u) & 0xffu));
 }
 
+// --- Transvoxel seams (official snippet, Voxel Tools "Smooth terrains") ---
+// Meshes of VoxelLodTerrain contain the transition cells that stitch two
+// levels of detail. CUSTOM0 tells, per vertex, where to move it when a side
+// has a lower-resolution neighbour, and whether it belongs to a transition.
+// Without this, inactive transitions are drawn anyway: vertical walls with a
+// stretched texture along chunk borders.
+// Assigned by the voxel engine. Layout: 00000000 00000000 00000000 00xxyyzz
+// (-x x, -y y, -z z transitions).
+uniform int u_transition_mask;
+
+float get_transvoxel_secondary_factor(int idata) {
+	int transition_mask = u_transition_mask & 0xff;
+	int cell_border_mask = (idata >> 0) & 63;    // sides the cell touches
+	int vertex_border_mask = (idata >> 8) & 63;  // sides the vertex touches
+	// Near a side with a low-resolution neighbour: use the secondary position.
+	int m = transition_mask & cell_border_mask;
+	float t = float(m != 0);
+	// On a side without such a neighbour: do not move the vertex.
+	t *= float((vertex_border_mask & ~transition_mask) == 0);
+	return t;
+}
+
+vec3 get_transvoxel_position(vec3 vertex_pos, vec4 fdata) {
+	int idata = floatBitsToInt(fdata.a);
+	float secondary_factor = get_transvoxel_secondary_factor(idata);
+	vec3 secondary_position = fdata.xyz;
+	vec3 pos = mix(vertex_pos, secondary_position, secondary_factor);
+	// A vertex of an inactive transition collapses to the origin: its
+	// triangles become degenerate and are not drawn.
+	int itransition = (idata >> 16) & 0xff;
+	float transition_cull = float(itransition == 0 || (itransition & u_transition_mask) != 0);
+	pos *= transition_cull;
+	return pos;
+}
+
 void vertex() {
+	VERTEX = get_transvoxel_position(VERTEX, CUSTOM0);
 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	v_indices = decode_8bit_vec4(CUSTOM1.x);

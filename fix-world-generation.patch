@@ -1,0 +1,2393 @@
+diff --git a/autoload/game_manager.gd b/autoload/game_manager.gd
+index 20cc8bf..8cc15a0 100644
+--- a/autoload/game_manager.gd
++++ b/autoload/game_manager.gd
+@@ -17,12 +17,17 @@ const GAME_SCENE: String = "res://world/terrain_player_test.tscn"
+ func start_new_game() -> void:
+ 	set_paused(false)
+ 	SaveManager.delete_save()
++	# A new world starts on the first morning. The world scene starts the clock
++	# once the player is on the ground.
++	TimeOfDay.reset()
+ 	get_tree().change_scene_to_file(GAME_SCENE)
+ 
+ 
+ ## Reprend la partie sauvegardée.
+ func continue_game() -> void:
+ 	set_paused(false)
++	# The saved time is applied below; it must not move while the world loads.
++	TimeOfDay.stop_clock()
+ 	get_tree().change_scene_to_file(GAME_SCENE)
+ 
+ 	# Deux tours : le premier effectue le changement de scène, le second laisse
+@@ -35,6 +40,8 @@ func continue_game() -> void:
+ 
+ ## Revient à l'écran titre.
+ func return_to_menu() -> void:
++	# Stopped BEFORE unpausing: the clock must not tick on the title screen.
++	TimeOfDay.stop_clock()
+ 	set_paused(false)
+ 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
+ 
+diff --git a/autoload/time_of_day.gd b/autoload/time_of_day.gd
+index ccbef25..c3e09ba 100644
+--- a/autoload/time_of_day.gd
++++ b/autoload/time_of_day.gd
+@@ -20,12 +20,22 @@ signal day_night_changed(is_night: bool)
+ ## Heure à laquelle le soleil se couche.
+ @export var sunset_hour: float = 20.0
+ ## Si faux, le temps ne s'écoule plus.
+-@export var running: bool = true
++##
++## Off by default: the clock only runs while a world is actually being played.
++## As an autoload it lives for the whole application, so if it ran by default
++## it would keep advancing on the title screen and during the loading screen
++## (quit at 18:00, come back later: it was already the next morning).
++## GameManager and the world scene switch it on and off.
++@export var running: bool = false
++
++## Time and day at the start of a new game.
++const START_TIME: float = 8.0
++const START_DAY: int = 1
+ 
+ ## Heure courante, de 0.0 à 24.0.
+-var time_of_day: float = 8.0
++var time_of_day: float = START_TIME
+ ## Numéro du jour, à partir de 1.
+-var day: int = 1
++var day: int = START_DAY
+ 
+ var _last_emitted_hour: int = -1
+ var _was_night: bool = false
+@@ -68,6 +78,22 @@ func get_clock_text() -> String:
+ 	return "%02d:%02d" % [hours, minutes]
+ 
+ 
++## Starts the clock (the world is ready and the player can play).
++func start_clock() -> void:
++	running = true
++
++
++## Stops the clock (loading, title screen, leaving the world).
++func stop_clock() -> void:
++	running = false
++
++
++## Back to the first morning, for a new game. The clock stays stopped.
++func reset() -> void:
++	running = false
++	set_time(START_TIME, START_DAY)
++
++
+ ## Force l'heure, par exemple au chargement d'une sauvegarde.
+ func set_time(new_time: float, new_day: int = -1) -> void:
+ 	time_of_day = clampf(new_time, 0.0, 24.0)
+diff --git a/world/procedural_terrain_generator.gd b/world/procedural_terrain_generator.gd
+index 11f4826..1640a9f 100644
+--- a/world/procedural_terrain_generator.gd
++++ b/world/procedural_terrain_generator.gd
+@@ -1,106 +1,99 @@
+ extends RefCounted
+ class_name ProceduralTerrainGenerator
+-## Générateur procédural du monde (Epic E12 · Terrain voxel) — version 3.
++## World generation settings and entry points (Epic E12 · Voxel terrain).
+ ##
+-## TROIS IDÉES CLÉS (notes Notion du 22/09/2026) :
++## Generation runs in a VoxelGeneratorGraph (see TerrainGraph): the graph is
++## compiled to native code by Voxel Tools, which keeps streaming fast enough to
++## never leave holes around the player. The same formulas are mirrored in
++## GDScript by TerrainShape for point queries (spawn, water, biomes).
+ ##
+-## 1. GRILLE EN BLOCS. Un voxel vaut VOXEL_SIZE (0.25 unité), un bloc vaut
+-##    BLOCK_SIZE (0.75 unité = 3 voxels). Le relief est quantifié par paliers
+-##    d'un bloc : on obtient des terrasses franches, et le mailleur lisse ne
+-##    produit plus que des faces à 0°, 45° et 90° — l'aspect « bloc arrondi »
+-##    façon Terraria, sans changer de moteur de rendu.
+-##
+-## 2. GROTTES EN COULOIRS + SALLES. L'ancienne formule (une seule bande de
+-##    bruit 3D) creusait des NAPPES, d'où l'effet gruyère. Ici deux bandes de
+-##    bruit se croisent : leur intersection est un TUBE. Des salles plus larges
+-##    s'ouvrent de loin en loin sur ces couloirs, et les minerais apparaissent
+-##    en veines sur leurs parois.
+-##
+-## 3. BIOMES PAR TEMPÉRATURE ET HUMIDITÉ. Deux champs de bruit basse fréquence,
+-##    la température baissant avec l'altitude, donnent les 7 biomes de la note :
+-##    toundra, taïga, forêt tempérée, prairie tempérée, désert, forêt humide,
+-##    savane. Le biome choisit le matériau de surface ; le shader teinte la
+-##    végétation selon ce matériau.
++## Both read the SAME noise resources, created here once per seed. This is what
++## keeps the graph and the queries in agreement.
+ ##
+ ## CONVENTIONS
+-##   - Le GRAPHE travaille en VOXELS (le terrain est mis à l'échelle VOXEL_SIZE).
+-##   - Les constantes ci-dessous sont en UNITÉS DE MONDE, converties au besoin.
+-##   - SDF : négatif = matière.
+-##   - get_height() renvoie une hauteur en unités de monde et DOIT rester
+-##     identique au graphe (elle sert au spawn).
+-
+-## Graine du monde. Ce n'est PLUS une constante : chaque partie peut avoir la
+-## sienne (GAME-1219). Toujours la fixer AVANT d'appeler build().
++##   - The terrain is scaled by VOXEL_SIZE: the graph works in VOXELS.
++##   - Constants below are in WORLD UNITS unless their name ends with _V.
++##   - SDF: negative = matter.
++
++# TerrainGraph and TerrainShape read the constants of this file: they are loaded
++# lazily here, a preload in both directions would be circular.
++const TERRAIN_GRAPH_PATH := "res://world/terrain_graph.gd"
++const TERRAIN_SHAPE_PATH := "res://world/terrain_shape.gd"
++
++## World seed. Set it BEFORE build() and before any query.
+ static var world_seed: int = 1337
+ 
+-# --- Grille ---
+-const VOXEL_SIZE := 0.25             # taille d'un voxel, en unités de monde
+-const BLOCK_SIZE := 0.75             # un bloc = 3 voxels
++# --- Grid ---
++const VOXEL_SIZE := 0.25             # one voxel, in world units
++const BLOCK_SIZE := 0.75             # one block = 3 voxels
+ const BLOCK_VOXELS := 3
+ 
+-# --- Relief (unités de monde) ---
+-const HEIGHT_FREQUENCY := 0.0016
+-const HEIGHT_OCTAVES := 4
+-const WARP_AMPLITUDE := 40.0
+-const BASE_AMPLITUDE := 30.0
+-const MOUNTAIN_AMPLITUDE := 190.0
+-const MASK_FREQUENCY := 0.0007
+-const RIDGE_FREQUENCY := 0.010
+-const RIDGE_AMPLITUDE := 55.0
+-
+-# --- Grottes (unités de monde) ---
+-const CAVE_FREQUENCY := 0.018        # finesse des couloirs
+-const CAVE_WIDTH := 0.11            # demi-largeur des bandes croisées
+-const ROOM_FREQUENCY := 0.02        # taille des salles
+-const ROOM_THRESHOLD := 0.70         # plus haut = salles plus rares
+-const CAVE_SMOOTHNESS := 1.5
+-# --- Eau (GAME-1232) ---
+-# Niveau de la mer, en unités. Toute colonne dont le sol est en dessous est de
+-# la mer. Le plancher du relief étant à ~1.9, une mer à 8 couvre 21 % du monde.
++# --- Relief (world units) ---
++# Rolling grassy hills everywhere, and separate rocky massifs rising from them
++# (reference pictures: alpine meadow with rocky peaks, anime valley with lakes).
++const BASE_HEIGHT := 12.0            # mean ground height of the plains
++const HILLS_AMPLITUDE := 12.0        # plains range from 0 to 24 units
++const HILLS_PERIOD := 380.0          # width of a hill
++const HILLS_OCTAVES := 4
++const MASK_PERIOD := 1400.0          # size of mountain regions
++const MASK_LOW := 0.35               # raw mask value where mountains start
++const MASK_HIGH := 0.65              # raw mask value where they reach full height
++const MOUNTAIN_AMPLITUDE := 130.0    # extra height of a full massif
++const MOUNTAIN_PERIOD := 260.0       # width of a peak
++const MOUNTAIN_OCTAVES := 5
++# Tiny white-noise offset on the surface: breaks the contour lines that
++# quantization draws on very gentle slopes. In voxels.
++const DITHER_AMPLITUDE_V := 0.4
++const DITHER_PERIOD_V := 2.0
++
++# --- Sea ---
+ const SEA_LEVEL := 8.0
+ 
+-const SURFACE_CRUST := 8.0           # épaisseur de sol plein sous la surface
+-# Entrées de grottes (GAME-1227) : un bruit de basse fréquence désigne des
+-# taches où la croûte s'amincit jusqu'à disparaître. Un tunnel qui passe sous
+-# une tache débouche donc à l'air libre.
+-const ENTRANCE_FREQUENCY := 0.02     # taille des taches d'entrée
+-const ENTRANCE_THRESHOLD := 0.78     # au-delà, la croûte commence à s'amincir
+-const ENTRANCE_OPEN := 0.86          # au-delà, plus de croûte du tout
+-
+-# --- Minerais ---
+-const ORE_FREQUENCY := 0.05          # taille des veines
+-const ORE_TYPE_FREQUENCY := 0.004    # zones à charbon / fer / cuivre
+-const ORE_WALL_BAND := 2.0           # distance max à la paroi (unités)
+-const ORE_THRESHOLD := 0.55          # plus haut = minerais plus rares
++# --- Caves (world units) ---
++const CAVE_PERIOD := 55.0            # size of tunnels
++const CAVE_WIDTH := 0.11             # half width of the crossing noise bands
++const ROOM_PERIOD := 50.0            # size of rooms
++const ROOM_THRESHOLD := 0.70         # higher = rarer rooms
++const SURFACE_CRUST := 8.0           # solid ground kept above caves
++const ENTRANCE_PERIOD := 50.0        # size of the spots where caves open
++const ENTRANCE_LOW := 0.56           # raw noise value where the crust thins
++const ENTRANCE_HIGH := 0.72          # raw noise value where it is gone
++# How fast caves are closed off inside the crust, per voxel of missing depth.
++const CRUST_TAPER := 0.05
++# Near the surface of an entrance, tunnels are widened by this much so they
++# open cleanly instead of leaving thin floating lips.
++const ENTRANCE_WIDEN := 0.12
++const ENTRANCE_ROOF_V := 6.0         # depth (voxels) over which widening fades
++# Voxels closer than this to a cave (in cave-field units, about 2 voxels) are
++# cave walls: they are always rock, never grass or dirt.
++const CAVE_WALL_BAND := 0.06
++
++# --- Ores ---
++const ORE_PERIOD := 20.0             # size of veins
++const ORE_TYPE_PERIOD := 250.0       # coal / iron / copper regions
++const ORE_THRESHOLD := 0.55          # higher = rarer ores
++const ORE_NEAR_CAVE := 0.22          # veins follow cave walls
+ const ORE_MIN_DEPTH := 10.0
+ 
+ # --- Biomes ---
+-const TEMPERATURE_FREQUENCY := 0.0004
+-const HUMIDITY_FREQUENCY := 0.0005
+-const COLD_ALTITUDE_START := 60.0    # au-dessus, il commence à faire plus froid
+-const COLD_ALTITUDE_RANGE := 300.0   # altitude qui retire 1.0 de température
+-
+-# --- Couches ---
+-const TOP_LAYER := 0.75              # épaisseur de la couche de surface
+-const SUB_DEPTH := 4.0               # profondeur où commence la roche
+-const ROCK_ALTITUDE := 110.0         # au-delà, sommets rocheux
+-const ROCK_ALTITUDE_JITTER := 25.0   # irrégularité de cette limite (unités)
+-const SLOPE_STEP := 1.0              # pas (unités) de la mesure de pente
+-const SLOPE_DIRT := 1.8              # pente (tangente) au-delà : plus d'herbe
+-const SLOPE_ROCK := 2.6              # pente au-delà : roche à nu
+-
+-# --- Lissage du relief (GAME-1226) ---
+-# Dosage de la passe de moyenne sur le champ de hauteur : 0 = aucun lissage,
+-# 1 = moyenne pleine (noyau binomial 1-2-1 sur les 8 colonnes voisines).
+-const SMOOTH_STRENGTH := 1.0
+-# Tramage de la surface, en sous-voxels crête à crête : casse les courbes de
+-# niveau que la quantification dessine sur les pentes très douces. 0 = aucun.
+-const SURFACE_DITHER := 0.8
+-
+-# --- Matériaux (indice écrit dans le canal INDICES) ---
+-const MAT_GRASS := 0                 # herbe tempérée
+-const MAT_GRASS_DRY := 1             # herbe sèche (savane, prairie sèche)
+-const MAT_GRASS_COLD := 2            # herbe froide (taïga)
++const TEMPERATURE_PERIOD := 2500.0
++const HUMIDITY_PERIOD := 2000.0
++const COLD_ALTITUDE_START := 60.0    # above this, it gets colder
++const COLD_ALTITUDE_RANGE := 300.0   # altitude that removes 1.0 of temperature
++
++# --- Layers (vertical rule: top block, then dirt, then stone) ---
++const TOP_LAYER_V := 3               # the top block: 3 voxels = 0.75
++const SUB_DEPTH := 4.0               # stone starts this deep
++const ROCK_ALTITUDE := 110.0         # summits above this are bare rock
++const ROCK_ALTITUDE_JITTER := 25.0
++const ROCK_NOISE_PERIOD := 250.0
++const SLOPE_ROCK := 1.6              # slope (tangent) above which rock shows
++const SLOPE_SAMPLE_V := 2.0          # distance used to measure the slope
++
++# --- Materials (index written in the INDICES channel) ---
++const MAT_GRASS := 0                 # temperate grass
++const MAT_GRASS_DRY := 1             # dry grass (savanna, prairie)
++const MAT_GRASS_COLD := 2            # cold grass (taiga)
+ const MAT_DIRT := 3
+ const MAT_ROCK := 4
+ const MAT_SAND := 5
+@@ -114,7 +107,7 @@ const MATERIAL_NAMES := [
+ 	"sable", "neige", "charbon", "fer", "cuivre", "permafrost",
+ ]
+ 
+-# --- Biomes (valeurs de retour de get_biome) ---
++# --- Biomes (values returned by get_biome) ---
+ const BIOME_TUNDRA := 0
+ const BIOME_TAIGA := 1
+ const BIOME_TEMPERATE_FOREST := 2
+@@ -127,16 +120,14 @@ const BIOME_NAMES := [
+ 	"désert", "forêt humide", "savane",
+ ]
+ 
+-# Seuils de la pyramide température × humidité (note Notion).
+-# Ils ne sont PAS constants : chaque graine tire les siens dans ces plages, donc
+-# un monde peut être très désertique et un autre très froid. Les plages
+-# ci-dessous sont les seules valeurs réglées à la main — à ajuster librement.
+-const RANGE_T_TUNDRA := Vector2(0.10, 0.28)      # fin de la toundra
+-const RANGE_T_TAIGA := Vector2(0.10, 0.26)       # largeur de la taïga
+-const RANGE_T_HOT := Vector2(0.20, 0.38)         # largeur des terres tempérées
+-const RANGE_H_DESERT := Vector2(0.14, 0.36)      # fin du désert
+-const RANGE_H_FOREST := Vector2(0.14, 0.30)      # largeur des prairies
+-const RANGE_H_RAIN := Vector2(0.05, 0.20)        # largeur de la savane
++# Biome thresholds of the temperature x humidity pyramid. Each seed draws its
++# own inside these ranges, so one world can be mostly desert and another cold.
++const RANGE_T_TUNDRA := Vector2(0.10, 0.28)
++const RANGE_T_TAIGA := Vector2(0.10, 0.26)
++const RANGE_T_HOT := Vector2(0.20, 0.38)
++const RANGE_H_DESERT := Vector2(0.14, 0.36)
++const RANGE_H_FOREST := Vector2(0.14, 0.30)
++const RANGE_H_RAIN := Vector2(0.05, 0.20)
+ 
+ static var t_tundra := 0.20
+ static var t_taiga := 0.40
+@@ -145,30 +136,28 @@ static var h_desert := 0.25
+ static var h_forest := 0.50
+ static var h_rain := 0.60
+ 
++## Noise resources of the current seed, shared by the graph and the queries.
++static var _noises: Dictionary = {}
++static var _shape = null
++
+ 
+-# --- Graine (GAME-1219) -------------------------------------------------------
++# --- Seed --------------------------------------------------------------------
+ 
+-## Fixe la graine du monde. À appeler avant build() et avant tout get_height().
++## Sets the world seed. Call it before build() and before any query.
+ static func set_world_seed(value: int) -> void:
+ 	world_seed = value
+ 	_roll_biome_thresholds()
+-	_refresh_query()
++	_noises.clear()
++	_shape = null
+ 
+-## Tire une graine au hasard, la fixe, et la renvoie (pour l'afficher/sauver).
++## Draws a random seed, sets it and returns it.
+ static func randomize_world_seed() -> int:
+ 	var rng := RandomNumberGenerator.new()
+ 	rng.randomize()
+-	world_seed = int(rng.randi() % 1000000)
+-	_roll_biome_thresholds()
+-	_refresh_query()
++	set_world_seed(int(rng.randi() % 1000000))
+ 	return world_seed
+ 
+-## Les bruits du générateur de requête suivent la graine.
+-static func _refresh_query() -> void:
+-	if _query != null:
+-		_query.rebuild_noises()
+-
+-## Tire les seuils de biome de cette graine : chaque monde a ses proportions.
++## Draws this world's biome thresholds from the seed.
+ static func _roll_biome_thresholds() -> void:
+ 	var rng := RandomNumberGenerator.new()
+ 	rng.seed = world_seed * 31 + 7
+@@ -179,225 +168,122 @@ static func _roll_biome_thresholds() -> void:
+ 	h_forest = h_desert + rng.randf_range(RANGE_H_FOREST.x, RANGE_H_FOREST.y)
+ 	h_rain = minf(h_forest + rng.randf_range(RANGE_H_RAIN.x, RANGE_H_RAIN.y), 0.95)
+ 
+-## Résumé lisible des seuils de ce monde (console, écran de chargement).
++## Readable summary of this world's thresholds (console, loading screen).
+ static func biome_thresholds_text() -> String:
+ 	return "toundra<%.2f, taïga<%.2f, chaud>%.2f | désert<%.2f, prairie<%.2f, savane<%.2f" % [
+ 		t_tundra, t_taiga, t_hot, h_desert, h_forest, h_rain]
+ 
+ 
+-# --- Bruits (partagés graphe / GDScript) --------------------------------------
+-# Les fréquences sont données en unités de monde puis converties en voxels.
+-
+-static func _freq(world_frequency: float) -> float:
+-	return world_frequency * VOXEL_SIZE
+-
+-static func make_height_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed
+-	n.frequency = _freq(HEIGHT_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
+-	n.fractal_octaves = HEIGHT_OCTAVES
+-	n.domain_warp_enabled = true
+-	n.domain_warp_type = FastNoiseLite.DOMAIN_WARP_SIMPLEX
+-	n.domain_warp_amplitude = WARP_AMPLITUDE / VOXEL_SIZE
+-	n.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
+-	return n
+-
+-static func make_mask_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 2
+-	n.frequency = _freq(MASK_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-static func make_ridge_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 3
+-	n.frequency = _freq(RIDGE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
+-	n.fractal_octaves = 3
+-	return n
+-
+-static func make_temperature_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 10
+-	n.frequency = _freq(TEMPERATURE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-static func make_humidity_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 11
+-	n.frequency = _freq(HUMIDITY_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-static func make_cave_noise(index: int) -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 20 + index
+-	n.frequency = _freq(CAVE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
+-	n.fractal_octaves = 1
+-	return n
+-
+-static func make_room_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 30
+-	n.frequency = _freq(ROOM_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-## Taches où la croûte s'amincit : c'est là que les grottes débouchent.
+-static func make_entrance_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.seed = world_seed + 71
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.frequency = _freq(ENTRANCE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
++# --- Noises --------------------------------------------------------------------
++
++## The noise resources of the current seed, created on first use.
++## Keys: hills, mask, mountain, dither, temperature, humidity, rock,
++## cave_a, cave_b, room, entrance, ore, ore_type.
++static func noises() -> Dictionary:
++	if _noises.is_empty():
++		_noises = {
++			"hills": _noise(1, HILLS_PERIOD, HILLS_OCTAVES),
++			"mask": _noise(2, MASK_PERIOD, 2),
++			"mountain": _noise(3, MOUNTAIN_PERIOD, MOUNTAIN_OCTAVES),
++			"dither": _noise_voxels(4, DITHER_PERIOD_V, 1),
++			"temperature": _noise(10, TEMPERATURE_PERIOD, 1),
++			"humidity": _noise(11, HUMIDITY_PERIOD, 1),
++			"rock": _noise(12, ROCK_NOISE_PERIOD, 1),
++			"cave_a": _noise(20, CAVE_PERIOD, 1),
++			"cave_b": _noise(21, CAVE_PERIOD, 1),
++			"room": _noise(30, ROOM_PERIOD, 1),
++			"entrance": _noise(31, ENTRANCE_PERIOD, 1),
++			"ore": _noise(40, ORE_PERIOD, 1),
++			"ore_type": _noise(41, ORE_TYPE_PERIOD, 1),
++		}
++	return _noises
++
++## Noise with a period given in world units.
++static func _noise(seed_offset: int, period: float, octaves: int) -> ZN_FastNoiseLite:
++	return _noise_voxels(seed_offset, period / VOXEL_SIZE, octaves)
++
++## Noise with a period given in voxels (the graph works in voxels).
++static func _noise_voxels(seed_offset: int, period_v: float, octaves: int) -> ZN_FastNoiseLite:
++	var n := ZN_FastNoiseLite.new()
++	n.noise_type = ZN_FastNoiseLite.TYPE_OPEN_SIMPLEX_2S
++	n.seed = world_seed + seed_offset
++	n.period = period_v
++	if octaves > 1:
++		n.fractal_type = ZN_FastNoiseLite.FRACTAL_FBM
++		n.fractal_octaves = octaves
++	else:
++		n.fractal_type = ZN_FastNoiseLite.FRACTAL_NONE
+ 	return n
+ 
+ 
+-## Irrégularité de la limite d'altitude des sommets rocheux.
+-static func make_rock_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.seed = world_seed + 83
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.frequency = _freq(0.004)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-
+-static func make_ore_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 40
+-	n.frequency = _freq(ORE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
+-
+-static func make_ore_type_noise() -> FastNoiseLite:
+-	var n := FastNoiseLite.new()
+-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+-	n.seed = world_seed + 41
+-	n.frequency = _freq(ORE_TYPE_FREQUENCY)
+-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+-	return n
++# --- Terrain setup (shared by scenes) -----------------------------------------
+ 
+-## Silhouette du terrain : X = bruit normalisé 0..1, Y = profil de hauteur.
+-static func make_height_curve() -> Curve:
+-	var c := Curve.new()
+-	c.min_value = 0.0
+-	c.max_value = 1.0
+-	c.add_point(Vector2(0.0, 0.0))
+-	c.add_point(Vector2(0.45, 0.10))
+-	c.add_point(Vector2(0.65, 0.26))
+-	c.add_point(Vector2(0.82, 0.58))
+-	c.add_point(Vector2(1.0, 1.0))
+-	c.bake()
+-	return c
+-
+-## Répartition montagne : X = masque brut 0..1, Y = proportion de montagne.
+-static func make_mask_curve() -> Curve:
+-	var c := Curve.new()
+-	c.min_value = 0.0
+-	c.max_value = 1.0
+-	c.add_point(Vector2(0.0, 0.0))
+-	c.add_point(Vector2(0.30, 0.06))
+-	c.add_point(Vector2(0.45, 0.45))
+-	c.add_point(Vector2(0.60, 0.90))
+-	c.add_point(Vector2(1.0, 1.0))
+-	c.bake()
+-	return c
+-
+-
+-# --- Configuration du terrain (partagée par les scènes) -----------------------
+-
+-## Mesher Transvoxel qui transmet l'indice de matériau au shader (CUSTOM1).
++## Transvoxel mesher that passes the material index to the shader (CUSTOM1).
+ static func make_mesher() -> VoxelMesherTransvoxel:
+ 	var m := VoxelMesherTransvoxel.new()
+ 	m.texturing_mode = VoxelMesherTransvoxel.TEXTURES_SINGLE_S4
+ 	m.textures_ignore_air_voxels = true
+ 	return m
+ 
+-## Format des voxels : le mode « Single texture » exige un canal INDICES 8 bits.
++## Voxel format: "Single texture" mode needs an 8-bit INDICES channel.
+ static func make_format() -> VoxelFormat:
+ 	var f := VoxelFormat.new()
+ 	f.set_channel_depth(VoxelBuffer.CHANNEL_INDICES, VoxelBuffer.DEPTH_8_BIT)
+ 	return f
+ 
+-## Applique l'échelle de la grille : 1 voxel = VOXEL_SIZE unité de monde.
++## Applies the grid scale: 1 voxel = VOXEL_SIZE world units.
+ static func apply_scale(terrain: VoxelLodTerrain) -> void:
+ 	terrain.scale = Vector3.ONE * VOXEL_SIZE
+ 
+-## Monde -> voxels (coordonnées locales du terrain).
++## World -> voxels (terrain local coordinates).
+ static func to_voxel(world_position: Vector3) -> Vector3:
+ 	return world_position / VOXEL_SIZE
+ 
+-## Voxels -> monde.
++## Voxels -> world.
+ static func to_world(voxel_position: Vector3) -> Vector3:
+ 	return voxel_position * VOXEL_SIZE
+ 
++## Generator to put on the terrain.
++static func build() -> VoxelGenerator:
++	print("[terrain] Graine %d, seuils : %s" % [world_seed, biome_thresholds_text()])
++	return load(TERRAIN_GRAPH_PATH).build(noises())
+ 
+-# --- Requêtes de terrain (mêmes formules que la génération) -------------------
+-#
+-# Le monde n'est plus décrit par un graphe voxel mais par WorldGenerator, qui
+-# raisonne en BLOCS. Pour que le spawn, la faune et les futurs outils lisent
+-# exactement le même monde, tout passe par une instance de requête partagée.
+-
+-# Chargé paresseusement : WorldGenerator dépend déjà de ce fichier, un preload
+-# dans les deux sens serait circulaire.
+-static var _query = null
+ 
+-## Générateur de requête (ses bruits suivent la graine).
+-static func query():
+-	if _query == null:
+-		_query = load("res://world/world_generator.gd").new()
+-	return _query
++# --- Queries (same formulas as the graph) -------------------------------------
+ 
+-## Générateur à poser sur le terrain.
+-static func build() -> VoxelGenerator:
+-	var generator = load("res://world/world_generator.gd").new()
+-	print("[terrain] Monde en blocs — graine %d, seuils : %s" % [
+-		world_seed, biome_thresholds_text()])
+-	return generator
++static func shape():
++	if _shape == null:
++		_shape = load(TERRAIN_SHAPE_PATH).new(noises())
++	return _shape
+ 
+-## Hauteur du sol au point (x,z), EN UNITÉS DE MONDE, quantifiée comme la
+-## génération (blocs de BLOCK_SIZE, dalle de neige comprise).
++## Height of the rendered ground at (x, z), in WORLD UNITS.
+ static func get_height(x: float, z: float) -> float:
+-	var generator = query()
+-	var bx := int(floor(x / VOXEL_SIZE / BLOCK_VOXELS))
+-	var bz := int(floor(z / VOXEL_SIZE / BLOCK_VOXELS))
+-	var column: Dictionary = generator.column_data(bx, bz)
+-	var h: float = generator.smoothed_surface(bx, bz)
+-	var hs := int(floor(h + 0.5))
+-	if column["snow"]:
+-		# Toundra : permafrost arasé au bloc, puis la dalle de neige.
+-		hs = int(floor(float(hs) / float(BLOCK_VOXELS) + 0.5)) * BLOCK_VOXELS + 1
+-	return float(hs) * VOXEL_SIZE
+-
+-## Température [0,1] au point (x,z) : bruit basse fréquence, corrigé par l'altitude.
++	return (float(shape().top_voxels(x / VOXEL_SIZE, z / VOXEL_SIZE)) - 0.5) * VOXEL_SIZE
++
++## Ground height of a block column, in voxels (used by the water).
++static func block_ground_voxels(bx: int, bz: int) -> float:
++	# The middle voxel of the block (a block is voxels 0, 1 and 2).
++	var vx := float(bx * BLOCK_VOXELS + 1)
++	var vz := float(bz * BLOCK_VOXELS + 1)
++	return float(shape().top_voxels(vx, vz)) - 0.5
++
++## How open the crust is at (x, z): 0 = full crust, 1 = cave entrance.
++static func get_entrance_openness(x: float, z: float) -> float:
++	return shape().entrance_openness(x / VOXEL_SIZE, z / VOXEL_SIZE)
++
++## Temperature [0, 1] at (x, z).
+ static func get_temperature(x: float, z: float) -> float:
+-	var generator = query()
+-	var vx := x / VOXEL_SIZE
+-	var vz := z / VOXEL_SIZE
+-	return generator.temperature_at(vx, vz, generator.surface_voxels(vx, vz))
++	return shape().temperature(x / VOXEL_SIZE, z / VOXEL_SIZE)
+ 
+-## Humidité [0,1] au point (x,z).
++## Humidity [0, 1] at (x, z).
+ static func get_humidity(x: float, z: float) -> float:
+-	return query().humidity_at(x / VOXEL_SIZE, z / VOXEL_SIZE)
++	return shape().humidity(x / VOXEL_SIZE, z / VOXEL_SIZE)
+ 
+-## Biome au point (x,z) — voir BIOME_NAMES. Sert aussi à la faune et à la flore.
++## Biome at (x, z) — see BIOME_NAMES.
+ static func get_biome(x: float, z: float) -> int:
+ 	return biome_from(get_temperature(x, z), get_humidity(x, z))
+ 
+-## Biome à partir des deux taux (pyramide de la note Notion).
++## Biome from both rates (pyramid of the Notion note).
+ static func biome_from(temperature: float, humidity: float) -> int:
+ 	if temperature < t_tundra:
+ 		return BIOME_TUNDRA
+@@ -414,19 +300,3 @@ static func biome_from(temperature: float, humidity: float) -> int:
+ 	if humidity < h_rain:
+ 		return BIOME_SAVANNA
+ 	return BIOME_RAINFOREST
+-
+-## Matériau de surface d'un biome.
+-static func surface_material_of(biome: int) -> int:
+-	match biome:
+-		BIOME_TUNDRA:
+-			# Toundra : permafrost, trop froid pour l'herbe ; la neige est une
+-			# dalle posée par-dessus par le générateur.
+-			return MAT_PERMAFROST
+-		BIOME_TAIGA:
+-			return MAT_GRASS_COLD
+-		BIOME_DESERT:
+-			return MAT_SAND
+-		BIOME_SAVANNA, BIOME_TEMPERATE_PRAIRIE:
+-			return MAT_GRASS_DRY
+-		_:
+-			return MAT_GRASS
+diff --git a/world/shaders/sky.gdshader b/world/shaders/sky.gdshader
+index a32f235..0d0554d 100644
+--- a/world/shaders/sky.gdshader
++++ b/world/shaders/sky.gdshader
+@@ -28,7 +28,9 @@ uniform vec3 ground_color : source_color = vec3(0.24, 0.26, 0.28);
+ group_uniforms Nuages;
+ uniform float cloud_coverage : hint_range(0.0, 1.0) = 0.42;
+ uniform float cloud_opacity : hint_range(0.0, 1.0) = 0.92;
+-uniform float cloud_scale = 1.1;
++uniform float cloud_scale = 2.6;
++// Octaves of detail at the zenith (fewer towards the horizon).
++uniform int cloud_octaves : hint_range(4, 10) = 8;
+ uniform float cloud_height = 700.0;
+ uniform vec2 cloud_wind = vec2(0.004, 0.0015);
+ uniform vec3 cloud_lit : source_color = vec3(1.0, 0.99, 0.96);
+@@ -63,13 +65,15 @@ float value_noise(vec2 p) {
+ 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+ }
+ 
+-// Bruit fractal : cinq octaves, c'est le grain d'un cumulus.
+-float fbm(vec2 p) {
++// Fractal noise. Each octave is rotated so the value-noise grid never lines
++// up from one octave to the next (that alignment shows as blocky patterns).
++float fbm(vec2 p, int octaves) {
++	const mat2 rotation = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8));
+ 	float value = 0.0;
+ 	float amplitude = 0.5;
+-	for (int i = 0; i < 5; i++) {
++	for (int i = 0; i < octaves; i++) {
+ 		value += amplitude * value_noise(p);
+-		p *= 2.03;
++		p = rotation * p * 2.03;
+ 		amplitude *= 0.5;
+ 	}
+ 	return value;
+@@ -101,14 +105,25 @@ void sky() {
+ 	col += sun_color * pow(max(sun, 0.0), 8.0) * 0.22 * day_factor;
+ 
+ 	// Nuages : plan à cloud_height, vus en perspective.
++	//
++	// Detail: the old clouds had 5 octaves over a very large base scale; seen
++	// full screen, their finest detail was tens of pixels wide, which looked
++	// like a low-resolution texture. They now have cloud_octaves octaves over a
++	// finer base scale. The octave count drops towards the horizon, where the
++	// projection squeezes the plane and extra detail would only flicker, and in
++	// the radiance cubemap, which only feeds the ambient light.
+ 	if (up > 0.015) {
+ 		vec2 uv = dir.xz / up * (cloud_height * 0.0016 * cloud_scale) + cloud_wind * TIME;
+-		float n = fbm(uv);
++		int octaves = int(mix(4.0, float(cloud_octaves), smoothstep(0.03, 0.35, up)));
++		if (AT_CUBEMAP_PASS) {
++			octaves = 4;
++		}
++		float n = fbm(uv, octaves);
+ 		float density = smoothstep(1.0 - cloud_coverage, 1.0 - cloud_coverage + 0.22, n);
+ 		// Relief : on compare au voisin situé vers le soleil. Plus le nuage
+ 		// monte de ce côté, plus il est éclairé.
+ 		vec2 towards_sun = normalize(-sun_direction.xz + vec2(0.001, 0.0));
+-		float lit_sample = fbm(uv + towards_sun * 0.28);
++		float lit_sample = fbm(uv + towards_sun * 0.28, octaves);
+ 		float lit = clamp((n - lit_sample) * 2.5 + 0.5, 0.0, 1.0);
+ 		vec3 cloud = mix(cloud_shade, cloud_lit, lit);
+ 		// Au lever et au coucher, les nuages prennent la couleur du soleil.
+diff --git a/world/shaders/terrain_triplanar.gdshader b/world/shaders/terrain_triplanar.gdshader
+index 1d71948..23f17fa 100644
+--- a/world/shaders/terrain_triplanar.gdshader
++++ b/world/shaders/terrain_triplanar.gdshader
+@@ -63,7 +63,43 @@ vec4 decode_8bit_vec4(float v) {
+ 		float((i >> 24u) & 0xffu));
+ }
+ 
++// --- Transvoxel seams (official snippet, Voxel Tools "Smooth terrains") ---
++// Meshes of VoxelLodTerrain contain the transition cells that stitch two
++// levels of detail. CUSTOM0 tells, per vertex, where to move it when a side
++// has a lower-resolution neighbour, and whether it belongs to a transition.
++// Without this, inactive transitions are drawn anyway: vertical walls with a
++// stretched texture along chunk borders.
++// Assigned by the voxel engine. Layout: 00000000 00000000 00000000 00xxyyzz
++// (-x x, -y y, -z z transitions).
++uniform int u_transition_mask;
++
++float get_transvoxel_secondary_factor(int idata) {
++	int transition_mask = u_transition_mask & 0xff;
++	int cell_border_mask = (idata >> 0) & 63;    // sides the cell touches
++	int vertex_border_mask = (idata >> 8) & 63;  // sides the vertex touches
++	// Near a side with a low-resolution neighbour: use the secondary position.
++	int m = transition_mask & cell_border_mask;
++	float t = float(m != 0);
++	// On a side without such a neighbour: do not move the vertex.
++	t *= float((vertex_border_mask & ~transition_mask) == 0);
++	return t;
++}
++
++vec3 get_transvoxel_position(vec3 vertex_pos, vec4 fdata) {
++	int idata = floatBitsToInt(fdata.a);
++	float secondary_factor = get_transvoxel_secondary_factor(idata);
++	vec3 secondary_position = fdata.xyz;
++	vec3 pos = mix(vertex_pos, secondary_position, secondary_factor);
++	// A vertex of an inactive transition collapses to the origin: its
++	// triangles become degenerate and are not drawn.
++	int itransition = (idata >> 16) & 0xff;
++	float transition_cull = float(itransition == 0 || (itransition & u_transition_mask) != 0);
++	pos *= transition_cull;
++	return pos;
++}
++
+ void vertex() {
++	VERTEX = get_transvoxel_position(VERTEX, CUSTOM0);
+ 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+ 	v_world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+ 	v_indices = decode_8bit_vec4(CUSTOM1.x);
+diff --git a/world/shaders/underwater.gdshader b/world/shaders/underwater.gdshader
+new file mode 100644
+index 0000000..c3a03d8
+--- /dev/null
++++ b/world/shaders/underwater.gdshader
+@@ -0,0 +1,49 @@
++shader_type spatial;
++render_mode unshaded, fog_disabled, depth_draw_never, cull_disabled;
++
++// Underwater view: full-screen post-process, drawn only while the camera is
++// under the water surface (UnderwaterEffect toggles it).
++//
++// Technique from the Godot docs ("Advanced post-processing"): a 2x2 QuadMesh
++// under the camera, whose vertices are written straight to clip space, reads
++// the screen and the depth buffer:
++//   - the scene is read from a blurred mip level of the screen texture;
++//   - it fades into the water colour with the distance to each pixel;
++//   - the water colour darkens with the depth under the surface.
++
++uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap;
++uniform sampler2D depth_texture : hint_depth_texture, filter_nearest;
++
++uniform vec3 water_color : source_color = vec3(0.05, 0.24, 0.32);
++// Light kept from the scene seen through the water.
++uniform vec3 absorption : source_color = vec3(0.55, 0.80, 0.90);
++// Fog density, per unit of distance.
++uniform float fog_density = 0.12;
++// Mip level of the screen read: higher = blurrier.
++uniform float blur = 1.5;
++// Darkening per unit of depth under the surface.
++uniform float depth_darkening = 0.06;
++// Set by UnderwaterEffect: depth of the camera under the surface, in units.
++uniform float depth_below_surface = 0.0;
++
++void vertex() {
++	// Godot 4.3+ uses a reversed-Z depth buffer: 1.0 is the near plane.
++	POSITION = vec4(VERTEX.xy, 1.0, 1.0);
++}
++
++void fragment() {
++	float depth = texture(depth_texture, SCREEN_UV).x;
++#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
++	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
++#else
++	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
++#endif
++	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
++	view.xyz /= view.w;
++	float distance_to_pixel = length(view.xyz);
++
++	vec3 scene = textureLod(screen_texture, SCREEN_UV, blur).rgb * absorption;
++	float fog = 1.0 - exp(-distance_to_pixel * fog_density);
++	vec3 deep = water_color * exp(-depth_below_surface * depth_darkening);
++	ALBEDO = mix(scene, deep, fog);
++}
+diff --git a/world/shaders/water.gdshader b/world/shaders/water.gdshader
+index c2e0836..9e309a0 100644
+--- a/world/shaders/water.gdshader
++++ b/world/shaders/water.gdshader
+@@ -41,6 +41,8 @@ void fragment() {
+ 	vec3 a = texture(water_tex, uv + vec2(t, t * 0.6)).rgb;
+ 	vec3 b = texture(water_tex, uv * -0.7 + vec2(-t * 0.8, t * 0.45)).rgb;
+ 	float ripple = (a.r + b.r) * 0.5;
++	// The water texture itself gives the colour of the surface.
++	vec3 water_color = (a + b) * 0.5;
+ 
+ 	// Normale perturbée à partir du gradient des deux couches.
+ 	vec2 slope = vec2(a.r - b.r, a.g - b.g) * wave_strength;
+@@ -48,15 +50,27 @@ void fragment() {
+ 	NORMAL = normalize((VIEW_MATRIX * vec4(n, 0.0)).xyz);
+ 
+ 	// Profondeur d'eau sous ce fragment, lue dans le tampon de profondeur.
++	// Forward+ and Mobile use Vulkan NDCs, whose Z range is [0, 1]; only the
++	// Compatibility renderer uses [-1, 1] (Godot docs, "Advanced post-processing").
++	// The old code always remapped to [-1, 1]: the measured depth was wrong, so
++	// deep water stayed as transparent as a shallow shore.
+ 	float raw = texture(DEPTH_TEXTURE, SCREEN_UV).r;
+-	vec4 view = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, raw * 2.0 - 1.0, 1.0);
++#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
++	vec3 ndc = vec3(SCREEN_UV, raw) * 2.0 - 1.0;
++#else
++	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, raw);
++#endif
++	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+ 	view.xyz /= view.w;
+ 	float floor_distance = -view.z;
+ 	float surface_distance = -(VIEW_MATRIX * vec4(v_world_pos, 1.0)).z;
+ 	float thickness = max(floor_distance - surface_distance, 0.0);
+ 	float k = clamp(thickness / depth_fade, 0.0, 1.0);
+ 
+-	ALBEDO = mix(shallow_color, deep_color, k) * (0.85 + 0.3 * ripple);
++	// Texture tinted by depth: shallow water keeps its own colour, deep water
++	// turns dark blue.
++	vec3 tint = mix(shallow_color, deep_color, k);
++	ALBEDO = mix(water_color * tint * 2.0, tint, k * 0.6) * (0.85 + 0.3 * ripple);
+ 	ALPHA = mix(shallow_alpha, deep_alpha, k);
+ 	ROUGHNESS = water_roughness;
+ 	METALLIC = 0.0;
+diff --git a/world/terrain_graph.gd b/world/terrain_graph.gd
+new file mode 100644
+index 0000000..02871f7
+--- /dev/null
++++ b/world/terrain_graph.gd
+@@ -0,0 +1,261 @@
++class_name TerrainGraph
++extends RefCounted
++## Builds the world generator as a VoxelGeneratorGraph.
++##
++## Why a graph: Voxel Tools compiles it and runs each node on whole buffers of
++## voxels, in native code, on its worker threads. The previous GDScript
++## generator looped voxel by voxel and could not keep up with the player, which
++## left holes without collision around him.
++##
++## Every formula here is mirrored in TerrainShape (point queries). Change both
++## together. Positions are in VOXELS; the graph is evaluated at whole voxel
++## positions.
++##
++## What the graph produces:
++##   - SURFACE: rolling hills + separate rocky massifs, quantized to whole
++##     voxels. The SDF is binary (-1 / +1): the Transvoxel mesher then gives the
++##     rounded-block look (faces at 0, 45 and 90 degrees).
++##   - LAYERS: the top block (3 voxels) is grass (or the biome's surface), then
++##     dirt, then stone. Steep slopes and high summits are bare rock.
++##   - CAVES: crossing noise bands (tunnels) + rooms, kept under a solid crust
++##     except at entrance spots, where tunnels widen to open cleanly.
++##   - CAVE WALLS are always stone, and ore veins follow them.
++
++const PTG := preload("res://world/procedural_terrain_generator.gd")
++var _g: VoxelGraphFunction
++var _n: Dictionary
++var _x: Dictionary
++var _y: Dictionary
++var _z: Dictionary
++var _column := 0     # only used to lay nodes out in the graph editor
++
++
++## Returns a compiled generator, or null if compilation failed.
++static func build(noise_set: Dictionary) -> VoxelGeneratorGraph:
++	var graph := VoxelGeneratorGraph.new()
++	graph.clear()
++	# Materials are written as one 8-bit index per voxel (see make_format()).
++	graph.texture_mode = VoxelGeneratorGraph.TEXTURE_MODE_SINGLE
++	# SDF clipping skips blocks that are fully underground or fully in the air,
++	# but then it also skips their texture outputs: dug underground blocks would
++	# come out with material 0 (grass). Correct materials matter more here, so
++	# clipping is turned off with a threshold the binary SDF never reaches.
++	graph.sdf_clip_threshold = 10000.0
++
++	var builder := TerrainGraph.new()
++	builder._g = graph.get_main_function()
++	builder._n = noise_set
++	builder._build()
++
++	var result: Dictionary = graph.compile()
++	if not result.get("success", false):
++		push_error("[terrain] Graph compilation failed: %s (node %s)" % [
++			result.get("message", "?"), str(result.get("node_id", -1))])
++		return null
++	return graph
++
++
++# --- Graph -------------------------------------------------------------------
++
++func _build() -> void:
++	_x = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_X, Vector2(0, 0)))
++	_y = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_Y, Vector2(0, 200)))
++	_z = _ref(_g.create_node(VoxelGraphFunction.NODE_INPUT_Z, Vector2(0, 400)))
++
++	# --- Surface ---
++	var height := _height(_x, _z, true)
++	var top := _op(VoxelGraphFunction.NODE_FLOOR, [_op(VoxelGraphFunction.NODE_ADD, [height, 0.5])])
++	# Depth of this voxel under the surface: the top voxel of a column has 1.
++	var depth := _op(VoxelGraphFunction.NODE_SUBTRACT, [top, _y])
++	# Negative under the surface. Never 0: y and top are whole numbers.
++	var surface_sdf := _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_SUBTRACT, [_y, top]), 0.5])
++
++	# --- Caves ---
++	var cave := _cave_field()
++	var cave_open := _cave_opening(cave, depth)
++
++	# Air if the surface OR the cave says air. Then made binary.
++	var carved := _op(VoxelGraphFunction.NODE_MULTIPLY, [cave_open, 100.0])
++	var sdf := _op(VoxelGraphFunction.NODE_MAX, [surface_sdf, carved])
++	var binary := _op(VoxelGraphFunction.NODE_CLAMP, [_op(VoxelGraphFunction.NODE_MULTIPLY, [sdf, 1000.0]), -1.0, 1.0])
++	_op(VoxelGraphFunction.NODE_OUTPUT_SDF, [binary])
++
++	# --- Materials ---
++	_op(VoxelGraphFunction.NODE_OUTPUT_SINGLE_TEXTURE, [_material(top, depth, cave, cave_open)])
++
++
++## Ground height in voxels at (x, z). Mirrored by TerrainShape.height_voxels().
++func _height(x: Dictionary, z: Dictionary, with_dither: bool) -> Dictionary:
++	var hills := _noise_2d("hills", x, z)
++	var mask := _op(VoxelGraphFunction.NODE_SMOOTHSTEP, [_noise_2d("mask", x, z)],
++		{"edge0": PTG.MASK_LOW, "edge1": PTG.MASK_HIGH})
++	var m := _unit(_noise_2d("mountain", x, z))
++	var mountains := _op(VoxelGraphFunction.NODE_MULTIPLY, [
++		_op(VoxelGraphFunction.NODE_MULTIPLY, [_op(VoxelGraphFunction.NODE_MULTIPLY, [m, m]), mask]),
++		PTG.MOUNTAIN_AMPLITUDE / PTG.VOXEL_SIZE])
++	var plains := _op(VoxelGraphFunction.NODE_ADD, [
++		_op(VoxelGraphFunction.NODE_MULTIPLY, [hills, PTG.HILLS_AMPLITUDE / PTG.VOXEL_SIZE]),
++		PTG.BASE_HEIGHT / PTG.VOXEL_SIZE])
++	var h := _op(VoxelGraphFunction.NODE_ADD, [plains, mountains])
++	if with_dither:
++		var dither := _op(VoxelGraphFunction.NODE_MULTIPLY, [_noise_2d("dither", x, z), PTG.DITHER_AMPLITUDE_V])
++		h = _op(VoxelGraphFunction.NODE_ADD, [h, dither])
++	return h
++
++
++## Raw cave field: positive inside a tunnel or a room.
++func _cave_field() -> Dictionary:
++	var a := _op(VoxelGraphFunction.NODE_ABS, [_noise_3d("cave_a")])
++	var b := _op(VoxelGraphFunction.NODE_ABS, [_noise_3d("cave_b")])
++	# Two bands |noise| < width cross along a TUBE.
++	var tube := _op(VoxelGraphFunction.NODE_SUBTRACT, [PTG.CAVE_WIDTH, _op(VoxelGraphFunction.NODE_MAX, [a, b])])
++	var room := _op(VoxelGraphFunction.NODE_SUBTRACT, [_noise_3d("room"), PTG.ROOM_THRESHOLD])
++	return _op(VoxelGraphFunction.NODE_MAX, [tube, room])
++
++
++## Cave field once the crust is applied: positive = carved.
++##
++## Under a full crust, caves are closed off progressively as they get closer to
++## the surface. At entrance spots the crust is gone, and tunnels near the
++## surface are widened a little: they cut a clean opening instead of leaving a
++## thin roof or floating bits at the lip.
++func _cave_opening(cave: Dictionary, depth: Dictionary) -> Dictionary:
++	var entrance := _op(VoxelGraphFunction.NODE_SMOOTHSTEP, [_noise_2d("entrance", _x, _z)],
++		{"edge0": PTG.ENTRANCE_LOW, "edge1": PTG.ENTRANCE_HIGH})
++	var crust := _op(VoxelGraphFunction.NODE_MULTIPLY, [
++		_op(VoxelGraphFunction.NODE_SUBTRACT, [1.0, entrance]), PTG.SURFACE_CRUST / PTG.VOXEL_SIZE])
++	var missing := _op(VoxelGraphFunction.NODE_MAX, [_op(VoxelGraphFunction.NODE_SUBTRACT, [crust, depth]), 0.0])
++	var taper := _op(VoxelGraphFunction.NODE_MULTIPLY, [missing, PTG.CRUST_TAPER])
++	var near_surface := _op(VoxelGraphFunction.NODE_MAX, [
++		_op(VoxelGraphFunction.NODE_SUBTRACT, [1.0, _op(VoxelGraphFunction.NODE_MULTIPLY, [depth, 1.0 / PTG.ENTRANCE_ROOF_V])]),
++		0.0])
++	var widen := _op(VoxelGraphFunction.NODE_MULTIPLY, [
++		_op(VoxelGraphFunction.NODE_MULTIPLY, [entrance, near_surface]), PTG.ENTRANCE_WIDEN])
++	return _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_SUBTRACT, [cave, taper]), widen])
++
++
++## Material index of the voxel.
++func _material(top: Dictionary, depth: Dictionary, cave: Dictionary,
++		cave_open: Dictionary) -> Dictionary:
++	var t := _temperature(top)
++	var hu := _op(VoxelGraphFunction.NODE_CLAMP, [_unit_raw(_noise_2d("humidity", _x, _z)), 0.0, 1.0])
++
++	# Surface block of each biome (the pyramid of the Notion note).
++	var temperate := _select(PTG.MAT_SAND,
++		_select(PTG.MAT_GRASS_DRY, PTG.MAT_GRASS, hu, PTG.h_forest), hu, PTG.h_desert)
++	var hot := _select(PTG.MAT_SAND,
++		_select(PTG.MAT_GRASS_DRY, PTG.MAT_GRASS, hu, PTG.h_rain), hu, PTG.h_desert)
++	var warm := _select(temperate, hot, t, PTG.t_hot)
++	var skin := _select(PTG.MAT_SNOW, _select(PTG.MAT_GRASS_COLD, warm, t, PTG.t_taiga),
++		t, PTG.t_tundra)
++	# What lies under it, down to the stone.
++	var warm_sub := _select(PTG.MAT_SAND, PTG.MAT_DIRT, hu, PTG.h_desert)
++	var sub := _select(PTG.MAT_PERMAFROST, _select(PTG.MAT_DIRT, warm_sub, t, PTG.t_taiga),
++		t, PTG.t_tundra)
++
++	# Bare rock on steep slopes and high summits.
++	var rockness := _rockness(top)
++	skin = _select(skin, PTG.MAT_ROCK, rockness, 0.0)
++	sub = _select(sub, PTG.MAT_ROCK, rockness, 0.0)
++
++	# Stone, with ore veins along cave walls.
++	var deep := _deep_material(depth, cave)
++
++	# Vertical rule: top block, then the sub layer, then stone.
++	var upper := _select(skin, sub, depth, float(PTG.TOP_LAYER_V) + 0.5)
++	var layered := _select(upper, deep, depth, PTG.SUB_DEPTH / PTG.VOXEL_SIZE + 0.5)
++
++	# Cave walls are stone: no grass or dirt inside caves. The top block is kept,
++	# so the lip of an entrance stays grassy like the ground around it.
++	var wall := _op(VoxelGraphFunction.NODE_MIN, [
++		_op(VoxelGraphFunction.NODE_ADD, [cave_open, PTG.CAVE_WALL_BAND]),
++		_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, float(PTG.TOP_LAYER_V) + 0.5])])
++	return _select(layered, deep, wall, 0.0)
++
++
++## Temperature [0, 1], colder with altitude. Mirrored by TerrainShape.
++func _temperature(top: Dictionary) -> Dictionary:
++	var base := _unit_raw(_noise_2d("temperature", _x, _z))
++	var above := _op(VoxelGraphFunction.NODE_MAX, [
++		_op(VoxelGraphFunction.NODE_SUBTRACT, [top, PTG.COLD_ALTITUDE_START / PTG.VOXEL_SIZE]), 0.0])
++	var cold := _op(VoxelGraphFunction.NODE_MULTIPLY, [above, PTG.VOXEL_SIZE / PTG.COLD_ALTITUDE_RANGE])
++	return _op(VoxelGraphFunction.NODE_CLAMP, [_op(VoxelGraphFunction.NODE_SUBTRACT, [base, cold]), 0.0, 1.0])
++
++
++## Positive where the surface is bare rock (too steep, or too high).
++func _rockness(top: Dictionary) -> Dictionary:
++	var s := PTG.SLOPE_SAMPLE_V
++	var h0 := _height(_x, _z, false)
++	var hx := _height(_op(VoxelGraphFunction.NODE_ADD, [_x, s]), _z, false)
++	var hz := _height(_x, _op(VoxelGraphFunction.NODE_ADD, [_z, s]), false)
++	var gx := _op(VoxelGraphFunction.NODE_MULTIPLY, [_op(VoxelGraphFunction.NODE_SUBTRACT, [hx, h0]), 1.0 / s])
++	var gz := _op(VoxelGraphFunction.NODE_MULTIPLY, [_op(VoxelGraphFunction.NODE_SUBTRACT, [hz, h0]), 1.0 / s])
++	var slope2 := _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_MULTIPLY, [gx, gx]), _op(VoxelGraphFunction.NODE_MULTIPLY, [gz, gz])])
++	var steep := _op(VoxelGraphFunction.NODE_SUBTRACT, [slope2, PTG.SLOPE_ROCK * PTG.SLOPE_ROCK])
++
++	var limit := _op(VoxelGraphFunction.NODE_ADD, [
++		_op(VoxelGraphFunction.NODE_MULTIPLY, [_noise_2d("rock", _x, _z), PTG.ROCK_ALTITUDE_JITTER / PTG.VOXEL_SIZE]),
++		PTG.ROCK_ALTITUDE / PTG.VOXEL_SIZE])
++	var high := _op(VoxelGraphFunction.NODE_SUBTRACT, [top, limit])
++	return _op(VoxelGraphFunction.NODE_MAX, [steep, high])
++
++
++## Stone, or an ore when a vein crosses a cave wall deep enough.
++func _deep_material(depth: Dictionary, cave: Dictionary) -> Dictionary:
++	var ore := _unit_raw(_noise_3d("ore"))
++	var kind := _unit_raw(_noise_3d("ore_type"))
++	var ore_kind := _select(PTG.MAT_COAL, _select(PTG.MAT_IRON, PTG.MAT_COPPER, kind, 0.62),
++		kind, 0.4)
++	var ore_mask := _op(VoxelGraphFunction.NODE_MIN, [
++		_op(VoxelGraphFunction.NODE_MIN, [
++			_op(VoxelGraphFunction.NODE_SUBTRACT, [ore, PTG.ORE_THRESHOLD]),
++			_op(VoxelGraphFunction.NODE_ADD, [cave, PTG.ORE_NEAR_CAVE])]),
++		_op(VoxelGraphFunction.NODE_SUBTRACT, [depth, PTG.ORE_MIN_DEPTH / PTG.VOXEL_SIZE])])
++	return _select(PTG.MAT_ROCK, ore_kind, ore_mask, 0.0)
++
++
++# --- Helpers -------------------------------------------------------------------
++
++## A reference to a node output, to tell it apart from a constant.
++static func _ref(node_id: int) -> Dictionary:
++	return {"id": node_id}
++
++
++## Creates a node. Each input is either a node reference (connected) or a
++## number (set as the input's default value). Inputs follow the documented
++## order of the node (a, b / x, min, max / a, b, t ...).
++func _op(type: int, inputs: Array, params: Dictionary = {}) -> Dictionary:
++	_column += 1
++	var id := _g.create_node(type, Vector2(200 * (_column % 40), 200 * int(_column / 40.0)))
++	for i in inputs.size():
++		var value = inputs[i]
++		if value is Dictionary:
++			_g.add_connection(value["id"], 0, id, i)
++		else:
++			_g.set_node_default_input(id, i, float(value))
++	for param_name in params:
++		_g.set_node_param_by_name(id, param_name, params[param_name])
++	return _ref(id)
++
++
++## Select: returns `a` if `t` < threshold, `b` otherwise.
++func _select(a, b, t: Dictionary, threshold: float) -> Dictionary:
++	return _op(VoxelGraphFunction.NODE_SELECT, [a, b, t], {"threshold": threshold})
++
++
++func _noise_2d(key: String, x: Dictionary, z: Dictionary) -> Dictionary:
++	return _op(VoxelGraphFunction.NODE_FAST_NOISE_2D, [x, z], {"noise": _n[key]})
++
++
++func _noise_3d(key: String) -> Dictionary:
++	return _op(VoxelGraphFunction.NODE_FAST_NOISE_3D, [_x, _y, _z], {"noise": _n[key]})
++
++
++## Noise [-1, 1] -> [0, 1], not clamped.
++func _unit_raw(value: Dictionary) -> Dictionary:
++	return _op(VoxelGraphFunction.NODE_ADD, [_op(VoxelGraphFunction.NODE_MULTIPLY, [value, 0.5]), 0.5])
++
++
++## Noise [-1, 1] -> [0, 1], clamped.
++func _unit(value: Dictionary) -> Dictionary:
++	return _op(VoxelGraphFunction.NODE_CLAMP, [_unit_raw(value), 0.0, 1.0])
+diff --git a/world/terrain_player_test.gd b/world/terrain_player_test.gd
+index b95b3da..57c78b4 100644
+--- a/world/terrain_player_test.gd
++++ b/world/terrain_player_test.gd
+@@ -4,10 +4,15 @@ extends Node3D
+ ##   - Le terrain est à l'échelle de la grille : 1 voxel = 0.25 unité, 1 bloc
+ ##     = 0.75 unité. Les coordonnées du VoxelTool sont donc LOCALES (voxels),
+ ##     jamais celles du monde : on convertit avec ProceduralTerrainGenerator.
+-##   - SPAWN : le joueur reste hors-physique tant que la collision du chunk
+-##     sous lui n'est pas prête (GAME-1210). Le filet anti-chute ne sert que de
+-##     secours (GAME-1204), et une dépénétration remonte le joueur s'il se
+-##     retrouve dans la matière (GAME-1211).
++##   - SPAWN: the player appears in a COMPLETE world. The loading screen stays
++##     until the whole full-detail area around the spawn is meshed and the
++##     ground under the player has its collider. No timeout: the player is
++##     never dropped into an unfinished world.
++##   - STREAMING GUARD: while playing, if the player reaches ground whose data
++##     or collider is not built yet, he is held in place until it is. He can
++##     neither fall through nor walk into a hole.
++##   - A dépénétration remonte le joueur s'il se retrouve dans la matière
++##     (GAME-1211).
+ ##   - CONSTRUCTION : clic gauche = casser le bloc visé (on ramasse son
+ ##     matériau), clic droit = poser un bloc du matériau en main, aligné sur la
+ ##     grille. Touches 1 à 9 : choisir la matière à poser.
+@@ -22,6 +27,7 @@ const LoadingScreenScene := preload("res://ui/loading_screen.tscn")
+ const WaterFieldScript := preload("res://world/water_field.gd")
+ const WaterSurfaceScript := preload("res://world/water_surface.gd")
+ const SkyEnvironmentScript := preload("res://world/sky_environment.gd")
++const UnderwaterEffectScript := preload("res://world/underwater_effect.gd")
+ 
+ const LOD_COUNT := 7
+ const LOD_DISTANCE := 128.0    # en voxels (= 32 unités de plein détail)
+@@ -29,18 +35,29 @@ const VIEW_DISTANCE := 800     # en voxels (= 200 unités)
+ const COLLISION_LOD_COUNT := 1
+ const SPAWN_LIFT := 3.0
+ const DROP_MARGIN := 0.2
+-const SCAN_TOP := 400.0
+-const SCAN_BOTTOM := -400.0
+-const SPAWN_TIMEOUT := 20.0
+ const FALL_LIMIT := -120.0
+ ## Graine fixe pour rejouer un monde ; -1 = graine tirée au hasard.
+ const FIXED_SEED := -1
+-## Le filet anti-chute ne vaut que pendant ces premières secondes au sol :
+-## après, être sous la surface veut simplement dire qu'on explore une grotte.
+-const SPAWN_GRACE := 6.0
+ ## Tolérance (unités) entre la hauteur analytique et la collision trouvée.
+ const SURFACE_TOLERANCE := 3.0
+ 
++# Spawn area that must be meshed at full detail before the player appears, in
++# voxels (half sizes): 16 units around him, 8 up and down. It must fit inside
++# the full-detail sphere (LOD_DISTANCE = 128 voxels), otherwise its corners
++# would be meshed at a lower level and never reported as done at level 0:
++# sqrt(64² + 64² + 32²) = 96 < 128.
++const SPAWN_AREA_V := 64.0
++const SPAWN_AREA_HEIGHT_V := 32.0
++# The area is checked as SPAWN_AREA_CELLS x SPAWN_AREA_CELLS boxes, which also
++# gives the progress shown on the loading screen.
++const SPAWN_AREA_CELLS := 4
++# Spawn search: spiral of candidate columns around the origin, in units.
++const SPAWN_SEARCH_STEP := 24.0
++const SPAWN_SEARCH_RADIUS := 2000.0
++const SPAWN_MAX_SLOPE := 0.6        # tangent
++# Streaming guard: how far under the feet the ground is checked, in units.
++const GUARD_PROBE_DEPTH := 0.6
++
+ const EDIT_DISTANCE := 6.0     # portée de construction, en unités de monde
+ 
+ # Dépénétration (GAME-1211) : sondes sur la hauteur du joueur.
+@@ -53,12 +70,14 @@ var _camera: Camera3D
+ var _terrain: VoxelLodTerrain
+ var _voxel_tool: VoxelTool
+ var _grounded := false
+-var _elapsed := 0.0
+ var _reported := false
+ var _report_time := 0.0
++## True while the streaming guard holds the player.
++var _held := false
++## Largest number of pending voxel tasks seen while loading (progress bar).
++var _max_pending := 0
+ ## Matériau en main : celui du dernier bloc cassé (terre au départ).
+ var _held_material: int = ProceduralTerrainGenerator.MAT_DIRT
+-var _grace_left := 0.0
+ var _loading: CanvasLayer
+ ## Nappe d'eau du monde et son maillage de surface.
+ var _water_field
+@@ -179,82 +198,114 @@ func _depenetrate_player() -> void:
+ 			push_warning("[terrain_player] Dépénétration : limite atteinte.")
+ 
+ func _physics_process(delta: float) -> void:
+-	if _grounded:
+-		var p0 := _player.global_position
+-		# Secours des premières secondes seulement : passé ce délai, être sous
+-		# la surface signifie simplement qu'on explore une grotte.
+-		_grace_left = maxf(_grace_left - delta, 0.0)
+-		var surf := ProceduralTerrainGenerator.get_height(p0.x, p0.z)
+-		if _grace_left > 0.0 and not _player.is_on_floor() and _player.velocity.y < 0.0 \
+-				and p0.y < surf - 2.0:
+-			_begin_settle()
+-			return
+-		if p0.y < FALL_LIMIT:
+-			_begin_settle()
+-			return
+-		if not _reported:
+-			_report_time += delta
+-			if _report_time >= 1.0:
+-				_reported = true
+-				var biome: int = ProceduralTerrainGenerator.get_biome(p0.x, p0.z)
+-				print("[terrain_player] DIAG 1s : au sol=%s, y=%.1f, biome=%s" % [
+-					str(_player.is_on_floor()), p0.y,
+-					ProceduralTerrainGenerator.BIOME_NAMES[biome]])
++	if not _grounded:
++		_settle_step()
++		return
++	_guard_streaming()
++	var p0 := _player.global_position
++	if p0.y < FALL_LIMIT:
++		push_warning("[terrain_player] Joueur sous la limite du monde : retour à la surface.")
++		_begin_settle()
+ 		return
+-	_settle_step(delta)
++	if not _reported:
++		_report_time += delta
++		if _report_time >= 1.0:
++			_reported = true
++			var biome: int = ProceduralTerrainGenerator.get_biome(p0.x, p0.z)
++			print("[terrain_player] DIAG 1s : au sol=%s, y=%.1f, biome=%s" % [
++				str(_player.is_on_floor()), p0.y,
++				ProceduralTerrainGenerator.BIOME_NAMES[biome]])
++
++
++func _exit_tree() -> void:
++	# Leaving the world by any path: the clock must not keep running.
++	TimeOfDay.stop_clock()
++
+ 
+ func _surface_wait_pos(x: float, z: float) -> Vector3:
+ 	return Vector3(x, ProceduralTerrainGenerator.get_height(x, z) + SPAWN_LIFT, z)
+ 
++
++## Holds the player above the ground of his column until it is ready again.
+ func _begin_settle() -> void:
+ 	_grounded = false
+-	_elapsed = 0.0
+ 	_reported = false
+ 	_report_time = 0.0
+ 	var p := _player.global_position
+ 	_player.global_position = _surface_wait_pos(p.x, p.z)
+ 	_player.velocity = Vector3.ZERO
+ 	_player.set_physics_process(false)
+-	push_warning("[terrain_player] Rattrapage anti-chute : le joueur était passé sous le terrain.")
+-
+-func _settle_step(delta: float) -> void:
+-	# GAME-1210 : on attend que la collision existe vraiment SOUS LA SURFACE
+-	# avant de rendre la physique au joueur. Le rayon ne balaie qu'une fenêtre
+-	# autour de la hauteur analytique : sinon, un plafond de grotte chargé avant
+-	# le sol ferait apparaître le joueur sous terre.
+-	_elapsed += delta
++
++
++## Waits for a complete world around the spawn, then drops the player.
++##
++## Three conditions, all required, no timeout:
++##   1. every box of the spawn area has been meshed at full detail
++##      (VoxelLodTerrain.is_area_meshed);
++##   2. the voxel engine has no work left: generation, meshing, streaming, and
++##      main-thread tasks (which include building colliders) — the whole view,
++##      every level of detail, is done (VoxelEngine.get_stats);
++##   3. a ray finds the collider of the ground under the player.
++func _settle_step() -> void:
+ 	var p := _player.global_position
+ 	var surf := ProceduralTerrainGenerator.get_height(p.x, p.z)
+-	var space := get_world_3d().direct_space_state
+-	var query := PhysicsRayQueryParameters3D.create(
+-		Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
++	var meshed := _spawn_area_meshed_ratio(Vector3(p.x, surf, p.z))
++	if meshed < 1.0:
++		_show_loading(meshed * 0.6, "Génération du terrain…")
++		return
++
++	var pending := _pending_voxel_tasks()
++	_max_pending = maxi(_max_pending, pending)
++	if pending > 0:
++		var done := 1.0 - float(pending) / float(maxi(_max_pending, 1))
++		_show_loading(0.6 + 0.35 * done, "Chargement des alentours…")
++		return
++
++	_show_loading(0.97, "Mise en place de la collision…")
++	var hit := _ground_ray(Vector3(p.x, surf + SPAWN_LIFT + 1.0, p.z),
+ 		Vector3(p.x, surf - SURFACE_TOLERANCE, p.z))
+-	query.exclude = [_player.get_rid()]
+-	_update_loading(surf)
+-	var hit := space.intersect_ray(query)
+-	if hit:
++	if not hit.is_empty():
+ 		_drop_player(float(hit.position.y) + DROP_MARGIN)
+-	elif _elapsed >= SPAWN_TIMEOUT:
+-		push_warning("[terrain_player] Collision toujours absente : pose sur la hauteur calculée.")
+-		_drop_player(surf + DROP_MARGIN)
+ 
+-## Avancement affiché : les voxels d'abord, la collision ensuite.
+-func _update_loading(surf: float) -> void:
++
++## Tasks still queued in the voxel engine (all terrains).
++func _pending_voxel_tasks() -> int:
++	var tasks: Dictionary = VoxelEngine.get_stats().get("tasks", {})
++	return int(tasks.get("streaming", 0)) + int(tasks.get("generation", 0)) \
++		+ int(tasks.get("meshing", 0)) + int(tasks.get("main_thread", 0))
++
++
++## Share of the spawn area already meshed at full detail, from 0 to 1.
++func _spawn_area_meshed_ratio(center_world: Vector3) -> float:
++	var center := ProceduralTerrainGenerator.to_voxel(center_world)
++	var cell := SPAWN_AREA_V * 2.0 / float(SPAWN_AREA_CELLS)
++	var origin := center - Vector3(SPAWN_AREA_V, SPAWN_AREA_HEIGHT_V, SPAWN_AREA_V)
++	var size := Vector3(cell, SPAWN_AREA_HEIGHT_V * 2.0, cell)
++	var done := 0
++	for ix in SPAWN_AREA_CELLS:
++		for iz in SPAWN_AREA_CELLS:
++			var box := AABB(origin + Vector3(ix * cell, 0.0, iz * cell), size)
++			if _terrain.is_area_meshed(box, 0):
++				done += 1
++	return float(done) / float(SPAWN_AREA_CELLS * SPAWN_AREA_CELLS)
++
++
++func _show_loading(progress: float, status: String) -> void:
+ 	if _loading == null or not is_instance_valid(_loading):
+ 		return
+-	# La barre avance déjà avec le temps, pour ne jamais paraître figée.
+-	_loading.set_progress(minf(_elapsed / SPAWN_TIMEOUT, 0.85) * 0.5)
+-	var spawn_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(
+-		Vector3(_player.global_position.x, surf, _player.global_position.z)))
+-	if TerrainEditing.can_edit_quiet(_voxel_tool, spawn_voxel):
+-		_loading.set_progress(0.7)
+-		_loading.set_status("Mise en place de la collision…")
+-	else:
+-		_loading.set_status("Génération du terrain…")
++	_loading.set_progress(progress)
++	_loading.set_status(status)
++
++
++## Physics ray against the terrain, ignoring the player. Empty if nothing.
++func _ground_ray(from: Vector3, to: Vector3) -> Dictionary:
++	var query := PhysicsRayQueryParameters3D.create(from, to)
++	query.exclude = [_player.get_rid()]
++	return get_world_3d().direct_space_state.intersect_ray(query)
++
+ 
+ func _drop_player(y: float) -> void:
+ 	_grounded = true
+-	_grace_left = SPAWN_GRACE
+ 	var p := _player.global_position
+ 	_player.global_position = Vector3(p.x, y, p.z)
+ 	_player.velocity = Vector3.ZERO
+@@ -263,15 +314,82 @@ func _drop_player(y: float) -> void:
+ 	_depenetrate_player()
+ 	if _loading != null and is_instance_valid(_loading):
+ 		_loading.finish()
++		_loading = null
++		# First time on the ground: the world is ready, time can run.
++		TimeOfDay.start_clock()
+ 	print("[terrain_player] Joueur posé au sol à y=%.1f (biome %s)" % [
+ 		_player.global_position.y,
+ 		ProceduralTerrainGenerator.BIOME_NAMES[ProceduralTerrainGenerator.get_biome(p.x, p.z)]])
+ 
++
++## Streaming guard, every physics frame while playing.
++##
++## The player is held (no physics) when the ground around him is not ready:
++##   - its voxel data is not loaded yet (the area is not editable), or
++##   - the voxels say there is ground right under his feet but no collider has
++##     been built for it yet (he would fall through).
++## He is released as soon as both are ready.
++func _guard_streaming() -> void:
++	var ground_ready := _ground_ready_around_player()
++	if ground_ready == not _held:
++		return
++	_held = not ground_ready
++	if _held:
++		_player.velocity = Vector3.ZERO
++	_player.set_physics_process(ground_ready)
++
++
++func _ground_ready_around_player() -> bool:
++	var feet := _player.global_position
++	var feet_voxel := Vector3i(ProceduralTerrainGenerator.to_voxel(feet).floor())
++	if not TerrainEditing.can_edit_quiet(_voxel_tool, feet_voxel):
++		return false
++	if _player.is_on_floor():
++		return true
++	# Falling or jumping: only a problem if there is ground just under the feet
++	# that the physics does not know about.
++	var below := feet + Vector3.DOWN * GUARD_PROBE_DEPTH
++	if not _is_solid_at(below):
++		return true
++	var hit := _ground_ray(feet + Vector3.UP * 0.5, below)
++	return not hit.is_empty()
++
++
++## Dry, flat enough, not over a cave entrance: the first such column on a
++## spiral around the origin. The same seed always gives the same spawn.
++func _find_spawn_column() -> Vector2:
++	var sea := ProceduralTerrainGenerator.SEA_LEVEL
++	var radius := 0.0
++	while radius <= SPAWN_SEARCH_RADIUS:
++		var steps := maxi(1, int(TAU * radius / SPAWN_SEARCH_STEP))
++		for i in steps:
++			var angle := TAU * float(i) / float(steps)
++			var x := cos(angle) * radius
++			var z := sin(angle) * radius
++			if _is_good_spawn(x, z, sea):
++				return Vector2(x, z)
++		radius += SPAWN_SEARCH_STEP
++	push_warning("[terrain_player] Aucune colonne de spawn idéale trouvée : origine.")
++	return Vector2.ZERO
++
++
++func _is_good_spawn(x: float, z: float, sea: float) -> bool:
++	var h := ProceduralTerrainGenerator.get_height(x, z)
++	if h < sea + 1.0:
++		return false
++	if ProceduralTerrainGenerator.get_entrance_openness(x, z) > 0.0:
++		return false
++	var dx := ProceduralTerrainGenerator.get_height(x + 1.0, z) - h
++	var dz := ProceduralTerrainGenerator.get_height(x, z + 1.0) - h
++	return sqrt(dx * dx + dz * dz) <= SPAWN_MAX_SLOPE
++
++
+ func _spawn_player() -> void:
+ 	_player = PlayerScene.instantiate()
+ 	add_child(_player)
+ 	_camera = _player.get_node("CameraPivot/Camera3D")
+-	_player.global_position = _surface_wait_pos(0.0, 0.0)
++	var spawn := _find_spawn_column()
++	_player.global_position = _surface_wait_pos(spawn.x, spawn.y)
+ 	_player.set_physics_process(false)
+ 	var viewer := VoxelViewer.new()
+ 	viewer.requires_collisions = true
+@@ -283,6 +401,10 @@ func _spawn_player() -> void:
+ 		var swimmer = _player.get_node_or_null("Swimmer")
+ 		if swimmer != null:
+ 			swimmer.set_water(_water)
++		var underwater := UnderwaterEffectScript.new()
++		underwater.name = "UnderwaterEffect"
++		_camera.add_child(underwater)
++		underwater.setup(_camera, _water)
+ 
+ func _build_terrain() -> void:
+ 	_terrain = VoxelLodTerrain.new()
+@@ -300,8 +422,8 @@ func _build_terrain() -> void:
+ 	_voxel_tool = _terrain.get_voxel_tool()
+ 	_voxel_tool.channel = VoxelBuffer.CHANNEL_SDF
+ 
+-	# L'eau lit le même générateur que le terrain : même relief, même graine.
+-	_water_field = WaterFieldScript.new(_terrain.generator)
++	# The water reads the same ground as the terrain graph (same seed).
++	_water_field = WaterFieldScript.new()
+ 	_water = WaterSurfaceScript.new()
+ 	_water.name = "WaterSurface"
+ 	add_child(_water)
+diff --git a/world/terrain_shape.gd b/world/terrain_shape.gd
+new file mode 100644
+index 0000000..d82fc70
+--- /dev/null
++++ b/world/terrain_shape.gd
+@@ -0,0 +1,61 @@
++class_name TerrainShape
++extends RefCounted
++## GDScript mirror of the terrain formulas, for point queries.
++##
++## TerrainGraph generates the world; this class answers "how high is the ground
++## here?" for the spawn, the water and the biomes. Every formula below MUST stay
++## identical to the one built in TerrainGraph, and both use the same noise
++## resources (ProceduralTerrainGenerator.noises()).
++##
++## All positions are in VOXELS (terrain local space).
++
++const PTG := preload("res://world/procedural_terrain_generator.gd")
++
++var _n: Dictionary
++
++
++func _init(noise_set: Dictionary) -> void:
++	_n = noise_set
++
++
++## Continuous ground height, in voxels. Same as TerrainGraph._height().
++func height_voxels(vx: float, vz: float, with_dither: bool = true) -> float:
++	var hills: float = _n["hills"].get_noise_2d(vx, vz)
++	var mask := smoothstep(PTG.MASK_LOW, PTG.MASK_HIGH, _n["mask"].get_noise_2d(vx, vz))
++	var m := clampf(_n["mountain"].get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
++	var h := PTG.BASE_HEIGHT / PTG.VOXEL_SIZE \
++		+ hills * (PTG.HILLS_AMPLITUDE / PTG.VOXEL_SIZE) \
++		+ m * m * mask * (PTG.MOUNTAIN_AMPLITUDE / PTG.VOXEL_SIZE)
++	if with_dither:
++		h += _n["dither"].get_noise_2d(vx, vz) * PTG.DITHER_AMPLITUDE_V
++	return h
++
++
++## Number of solid voxels in the column: voxels with y < top are ground.
++## The graph samples whole voxel positions, so the query does too.
++func top_voxels(vx: float, vz: float) -> int:
++	var sx := floorf(vx + 0.5)
++	var sz := floorf(vz + 0.5)
++	return int(floorf(height_voxels(sx, sz) + 0.5))
++
++
++## Temperature [0, 1]: low-frequency noise, colder with altitude.
++func temperature(vx: float, vz: float) -> float:
++	var sx := floorf(vx + 0.5)
++	var sz := floorf(vz + 0.5)
++	var altitude := float(top_voxels(sx, sz)) * PTG.VOXEL_SIZE
++	var base: float = _n["temperature"].get_noise_2d(sx, sz) * 0.5 + 0.5
++	var cold := maxf(altitude - PTG.COLD_ALTITUDE_START, 0.0) / PTG.COLD_ALTITUDE_RANGE
++	return clampf(base - cold, 0.0, 1.0)
++
++
++## Humidity [0, 1].
++func humidity(vx: float, vz: float) -> float:
++	var sx := floorf(vx + 0.5)
++	var sz := floorf(vz + 0.5)
++	return clampf(_n["humidity"].get_noise_2d(sx, sz) * 0.5 + 0.5, 0.0, 1.0)
++
++
++## 0 = full crust above caves, 1 = open cave entrance.
++func entrance_openness(vx: float, vz: float) -> float:
++	return smoothstep(PTG.ENTRANCE_LOW, PTG.ENTRANCE_HIGH, _n["entrance"].get_noise_2d(vx, vz))
+diff --git a/world/underwater_effect.gd b/world/underwater_effect.gd
+new file mode 100644
+index 0000000..2e274d3
+--- /dev/null
++++ b/world/underwater_effect.gd
+@@ -0,0 +1,42 @@
++class_name UnderwaterEffect
++extends MeshInstance3D
++## Underwater view: blur, water colour and fog while the camera is submerged.
++##
++## Put it under the camera. It asks the water surface for the level at the
++## camera position every frame and shows the post-process quad only below it.
++
++const UNDERWATER_SHADER := preload("res://world/shaders/underwater.gdshader")
++
++var _camera: Camera3D
++var _water          # WaterSurface
++var _material: ShaderMaterial
++
++
++func setup(camera: Camera3D, water) -> void:
++	_camera = camera
++	_water = water
++
++	# Full-screen quad (see the shader): 2x2, never culled.
++	var quad := QuadMesh.new()
++	quad.size = Vector2(2.0, 2.0)
++	mesh = quad
++	extra_cull_margin = 16384.0
++	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++
++	_material = ShaderMaterial.new()
++	_material.shader = UNDERWATER_SHADER
++	# Drawn after the water surface and the other transparent objects.
++	_material.render_priority = 10
++	material_override = _material
++	visible = false
++
++
++func _process(_delta: float) -> void:
++	if _camera == null or _water == null:
++		return
++	var eye := _camera.global_position
++	var level: float = _water.surface_y(eye)
++	var submerged := not is_nan(level) and eye.y < level
++	visible = submerged
++	if submerged:
++		_material.set_shader_parameter("depth_below_surface", level - eye.y)
+diff --git a/world/water_field.gd b/world/water_field.gd
+index d033ff9..a78bb72 100644
+--- a/world/water_field.gd
++++ b/world/water_field.gd
+@@ -28,19 +28,16 @@ const EPSILON := 0.01
+ ## l'eau oscille entre deux colonnes au lieu de se poser.
+ const TRANSFER := 0.45
+ 
+-var _generator                      # WorldGenerator
+ var _sea: float                     # niveau de la mer, en sous-voxels
+ var _levels: Dictionary = {}        # Vector2i -> float : colonnes hors règle
+-var _raw: Dictionary = {}           # Vector2i -> float : hauteurs brutes
+-var _ground: Dictionary = {}        # Vector2i -> float : cache du sol lissé
++var _ground: Dictionary = {}        # Vector2i -> float : ground height cache
+ var _active: Dictionary = {}        # Vector2i -> true : colonnes à faire couler
+ var _dirty: Dictionary = {}         # Vector2i -> true : colonnes à remailler
+ 
+ const OFFSETS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+ 
+ 
+-func _init(generator) -> void:
+-	_generator = generator
++func _init() -> void:
+ 	_sea = PTG.SEA_LEVEL / PTG.VOXEL_SIZE
+ 
+ 
+@@ -51,23 +48,14 @@ func sea_level() -> float:
+ 
+ # --- Lecture ------------------------------------------------------------------
+ 
+-## Altitude du sol de cette colonne, en sous-voxels — la même hauteur lissée
+-## que celle dont le générateur tire le terrain.
+-##
+-## Deux caches : les hauteurs brutes, partagées entre voisines (le lissage en
+-## lit neuf par colonne, sans cache on paierait neuf fois le bruit), et le
+-## résultat lissé.
++## Ground height of this block column, in voxels: the same quantized surface
++## the terrain graph generates (ProceduralTerrainGenerator.block_ground_voxels).
+ func ground_at(bx: int, bz: int) -> float:
+ 	var key := Vector2i(bx, bz)
+ 	var g = _ground.get(key)
+ 	if g != null:
+ 		return g
+-	for dz in range(-1, 2):
+-		for dx in range(-1, 2):
+-			var near := Vector2i(bx + dx, bz + dz)
+-			if not _raw.has(near):
+-				_raw[near] = _generator.column_height(near.x, near.y)
+-	g = _generator.smoothed_height(bx, bz, _raw)
++	g = PTG.block_ground_voxels(bx, bz)
+ 	_ground[key] = g
+ 	return g
+ 
+diff --git a/world/water_surface.gd b/world/water_surface.gd
+index 3efa99d..5e0ed91 100644
+--- a/world/water_surface.gd
++++ b/world/water_surface.gd
+@@ -1,15 +1,16 @@
+ class_name WaterSurface
+ extends Node3D
+-## Surface de l'eau : maillage en tuiles autour du joueur (GAME-1233).
++## Surface de l'eau (GAME-1233).
+ ##
+-## L'eau étant une hauteur par colonne, sa surface est un champ 2D : on la
+-## maille en quadrilatères horizontaux, fusionnés en rectangles maximaux
+-## (maillage glouton). La mer, qui est plate, se réduit ainsi à une poignée de
+-## rectangles par tuile au lieu de 256 quads.
++## The SEA is one flat disc at sea level that follows the player. The terrain
++## is drawn first and hides it wherever the ground is above the sea, so the
++## shoreline is exactly the terrain contour. (Before, the sea was made of
++## 0.75-unit quads per block column: at the shore they overhung the slope and
++## looked like plates floating above the ground.)
+ ##
+-## Au-delà des tuiles, un anneau plat ferme l'horizon. C'est un anneau et non un
+-## disque : il ne recouvre jamais la zone maillée, donc aucun conflit de
+-## profondeur, et il disparaît quand la caméra passe sous l'eau.
++## Water that is NOT at sea level (a column the flow has filled or drained) is
++## still meshed in tiles around the player, merged into maximal rectangles
++## (greedy meshing).
+ 
+ const PTG := preload("res://world/procedural_terrain_generator.gd")
+ const Field := preload("res://world/water_field.gd")
+@@ -18,10 +19,11 @@ const Field := preload("res://world/water_field.gd")
+ const TILE := 16
+ ## Rayon maillé, en tuiles (8 x 12 = 96 unités).
+ const TILE_RADIUS := 8
+-## Rayons de l'anneau d'horizon, en unités.
+-const RING_INNER := 96.0
+-const RING_OUTER := 1500.0
+-const RING_SEGMENTS := 48
++## Radius of the sea disc, in units, and its number of segments.
++const SEA_RADIUS := 1500.0
++const SEA_SEGMENTS := 48
++## Below this gap (voxels) a water column is at sea level: the disc draws it.
++const SEA_TOLERANCE := 0.05
+ 
+ ## Nombre de colonnes que l'écoulement traite par image.
+ const FLOW_BUDGET := 400
+@@ -63,10 +65,9 @@ func _process(_delta: float) -> void:
+ 	_rebuild_pending()
+ 
+ 	if _ring != null:
++		# Also visible from below: it is the surface seen while swimming.
+ 		_ring.global_position = Vector3(position.x, field.sea_level() * PTG.VOXEL_SIZE,
+ 			position.z)
+-		# Sous l'eau, l'anneau se verrait à travers le sol : on le cache.
+-		_ring.visible = position.y > field.sea_level() * PTG.VOXEL_SIZE
+ 
+ 
+ ## Altitude de la surface de l'eau à cette position du monde, ou NAN s'il n'y a
+@@ -147,8 +148,11 @@ func _tile_mesh(tile: Vector2i) -> ArrayMesh:
+ 	for ix in TILE:
+ 		for iz in TILE:
+ 			var s: float = field.surface_at(base_x + ix, base_z + iz)
+-			levels[ix * TILE + iz] = NAN if s == Field.DRY else s
+-			if s != Field.DRY:
++			# Dry, or at sea level: the sea disc already draws it.
++			if s == Field.DRY or absf(s - field.sea_level()) < SEA_TOLERANCE:
++				levels[ix * TILE + iz] = NAN
++			else:
++				levels[ix * TILE + iz] = s
+ 				any = true
+ 	if not any:
+ 		return null
+@@ -228,14 +232,13 @@ func _build_ring() -> void:
+ 	var verts := PackedVector3Array()
+ 	var normals := PackedVector3Array()
+ 	var uvs := PackedVector2Array()
+-	for i in RING_SEGMENTS:
+-		var a0 := TAU * float(i) / float(RING_SEGMENTS)
+-		var a1 := TAU * float(i + 1) / float(RING_SEGMENTS)
+-		var inner0 := Vector3(cos(a0) * RING_INNER, 0.0, sin(a0) * RING_INNER)
+-		var inner1 := Vector3(cos(a1) * RING_INNER, 0.0, sin(a1) * RING_INNER)
+-		var outer0 := Vector3(cos(a0) * RING_OUTER, 0.0, sin(a0) * RING_OUTER)
+-		var outer1 := Vector3(cos(a1) * RING_OUTER, 0.0, sin(a1) * RING_OUTER)
+-		for v in [inner0, outer0, outer1, inner0, outer1, inner1]:
++	# A fan of triangles around the centre: a flat disc.
++	for i in SEA_SEGMENTS:
++		var a0 := TAU * float(i) / float(SEA_SEGMENTS)
++		var a1 := TAU * float(i + 1) / float(SEA_SEGMENTS)
++		var outer0 := Vector3(cos(a0) * SEA_RADIUS, 0.0, sin(a0) * SEA_RADIUS)
++		var outer1 := Vector3(cos(a1) * SEA_RADIUS, 0.0, sin(a1) * SEA_RADIUS)
++		for v in [Vector3.ZERO, outer0, outer1]:
+ 			verts.push_back(v)
+ 			normals.push_back(Vector3.UP)
+ 			uvs.push_back(Vector2(v.x, v.z))
+@@ -250,5 +253,5 @@ func _build_ring() -> void:
+ 	_ring.mesh = mesh
+ 	_ring.material_override = _material
+ 	_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-	_ring.extra_cull_margin = RING_OUTER
++	_ring.extra_cull_margin = SEA_RADIUS
+ 	add_child(_ring)
+diff --git a/world/world_generator.gd b/world/world_generator.gd
+deleted file mode 100644
+index 21b526f..0000000
+--- a/world/world_generator.gd
++++ /dev/null
+@@ -1,604 +0,0 @@
+-class_name WorldGenerator
+-extends VoxelGeneratorScript
+-## Générateur du monde (GAME-1223, GAME-1225, GAME-1226).
+-##
+-## Le monde est une grille de BLOCS de 0.75 unité, chacun découpé en
+-## 3 x 3 x 3 sous-voxels de 0.25. Deux échelles cohabitent :
+-##
+-##   - la SURFACE est un champ de hauteur lu au pas de 0.25 dans les trois
+-##     directions : une passe de moyenne lisse le champ (smoothed_height), puis
+-##     chaque sous-colonne prend sa hauteur par interpolation bilinéaire entre
+-##     les colonnes voisines (sub_top). C'est ce qui donne des pentes, des
+-##     diagonales et des coins sans casser la lecture « en blocs ».
+-##   - les GROTTES restent raisonnées au bloc : un bloc est creusé ou non, et
+-##     les plafonds prennent une pente du catalogue BlockShapes.
+-##
+-## Le catalogue BlockShapes reste la référence des formes pour la construction.
+-##
+-## Le champ est BINAIRE : un sous-voxel est plein (-1) ou vide (+1). Les
+-## sommets du maillage tombent donc toujours au même endroit de la grille, et
+-## le mailleur produit le biseau à 45° attendu.
+-##
+-## Les bruits, les biomes et les matériaux viennent de
+-## ProceduralTerrainGenerator, qui reste la source unique des réglages.
+-
+-const PTG := preload("res://world/procedural_terrain_generator.gd")
+-const Shapes := preload("res://world/block_shapes.gd")
+-
+-const SOLID := -1.0
+-const AIR := 1.0
+-const N := 3                      # sous-voxels par bloc et par axe
+-
+-# Marge autour de la surface des grottes : au-delà, le bloc est franchement
+-# plein ou franchement creusé et n'a pas besoin du test au sous-voxel.
+-const CAVE_MARGIN := 0.22
+-
+-# Noyau binomial 1-2-1 de la passe de lissage (somme = 16).
+-const KERNEL := [1, 2, 1, 2, 4, 2, 1, 2, 1]
+-
+-# Bruits instanciés une seule fois : les recréer à chaque appel coûterait cher.
+-var _height_noise: FastNoiseLite
+-var _mask_noise: FastNoiseLite
+-var _ridge_noise: FastNoiseLite
+-var _temperature_noise: FastNoiseLite
+-var _humidity_noise: FastNoiseLite
+-var _cave_a: FastNoiseLite
+-var _cave_b: FastNoiseLite
+-var _room_noise: FastNoiseLite
+-var _ore_noise: FastNoiseLite
+-var _ore_type_noise: FastNoiseLite
+-var _entrance_noise: FastNoiseLite
+-var _rock_noise: FastNoiseLite
+-var _height_curve: Curve
+-var _mask_curve: Curve
+-
+-
+-func _init() -> void:
+-	rebuild_noises()
+-
+-
+-## À rappeler après un changement de graine.
+-func rebuild_noises() -> void:
+-	_height_noise = PTG.make_height_noise()
+-	_mask_noise = PTG.make_mask_noise()
+-	_ridge_noise = PTG.make_ridge_noise()
+-	_temperature_noise = PTG.make_temperature_noise()
+-	_humidity_noise = PTG.make_humidity_noise()
+-	_cave_a = PTG.make_cave_noise(0)
+-	_cave_b = PTG.make_cave_noise(1)
+-	_room_noise = PTG.make_room_noise()
+-	_ore_noise = PTG.make_ore_noise()
+-	_ore_type_noise = PTG.make_ore_type_noise()
+-	_entrance_noise = PTG.make_entrance_noise()
+-	_rock_noise = PTG.make_rock_noise()
+-	_height_curve = PTG.make_height_curve()
+-	_mask_curve = PTG.make_mask_curve()
+-
+-
+-func _get_used_channels_mask() -> int:
+-	return (1 << VoxelBuffer.CHANNEL_SDF) | (1 << VoxelBuffer.CHANNEL_INDICES)
+-
+-
+-# --- Champs continus (en VOXELS, l'espace local du terrain) -------------------
+-
+-## Hauteur continue du sol, en voxels, avant toute quantification.
+-func surface_voxels(vx: float, vz: float) -> float:
+-	var t := clampf(_height_noise.get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
+-	var profile := _height_curve.sample_baked(t)
+-	var mask_raw := clampf(_mask_noise.get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
+-	var mask := _mask_curve.sample_baked(mask_raw)
+-	var amp := (PTG.BASE_AMPLITUDE + mask * PTG.MOUNTAIN_AMPLITUDE) / PTG.VOXEL_SIZE
+-	var ridge := 1.0 - absf(_ridge_noise.get_noise_2d(vx, vz))
+-	var ridge_h := ridge * ridge * (PTG.RIDGE_AMPLITUDE / PTG.VOXEL_SIZE) * mask
+-	return profile * amp + ridge_h
+-
+-
+-func temperature_at(vx: float, vz: float, height_v: float) -> float:
+-	var base := clampf(_temperature_noise.get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
+-	var altitude := maxf(height_v * PTG.VOXEL_SIZE - PTG.COLD_ALTITUDE_START, 0.0)
+-	return clampf(base - altitude / PTG.COLD_ALTITUDE_RANGE, 0.0, 1.0)
+-
+-
+-func humidity_at(vx: float, vz: float) -> float:
+-	return clampf(_humidity_noise.get_noise_2d(vx, vz) * 0.5 + 0.5, 0.0, 1.0)
+-
+-
+-## Épaisseur de sol plein sous la surface, en sous-voxels (GAME-1227).
+-##
+-## Ailleurs elle vaut SURFACE_CRUST et aucune grotte ne perce le sol. Mais un
+-## bruit de basse fréquence désigne des taches où elle s'amincit jusqu'à zéro :
+-## un tunnel qui passe sous une tache débouche à l'air libre. C'est ce qui donne
+-## les entrées de grotte, gouffres compris en terrain plat.
+-func crust_voxels(cx: float, cz: float) -> float:
+-	var full := PTG.SURFACE_CRUST / PTG.VOXEL_SIZE
+-	var e := _entrance_noise.get_noise_2d(cx, cz) * 0.5 + 0.5
+-	if e <= PTG.ENTRANCE_THRESHOLD:
+-		return full
+-	var t := (e - PTG.ENTRANCE_THRESHOLD) / (PTG.ENTRANCE_OPEN - PTG.ENTRANCE_THRESHOLD)
+-	return full * clampf(1.0 - t, 0.0, 1.0)
+-
+-
+-## Densité de grotte en un point, en VOXELS : positive = creusé (GAME-1228).
+-##
+-## Le même champ que les grottes en blocs, mais CONTINU : on l'échantillonne aux
+-## coins des blocs et on l'interpole au sous-voxel, comme Minecraft interpole
+-## son bruit de grotte entre les coins de sa grille. Les galeries cessent d'être
+-## un empilement de marches de 0.75 et les lèvres d'entrée ne laissent plus de
+-## blocs suspendus.
+-func cave_density(vx: float, vy: float, vz: float) -> float:
+-	var a := PTG.CAVE_WIDTH - absf(_cave_a.get_noise_3d(vx, vy, vz))
+-	var b := PTG.CAVE_WIDTH - absf(_cave_b.get_noise_3d(vx, vy, vz))
+-	var room := _room_noise.get_noise_3d(vx, vy, vz) - PTG.ROOM_THRESHOLD
+-	return maxf(minf(a, b), room)
+-
+-
+-## Densité au coin (bx, by, bz) d'un bloc, mise en cache : chaque coin est
+-## partagé par huit blocs.
+-func _corner_density(cbx: int, cby: int, cbz: int, cache: Dictionary) -> float:
+-	var key := Vector3i(cbx, cby, cbz)
+-	var v = cache.get(key)
+-	if v == null:
+-		v = cave_density(float(cbx * N), float(cby * N), float(cbz * N))
+-		cache[key] = v
+-	return v
+-
+-
+-## Le bloc est-il creusé par une grotte ? Version au centre du bloc, gardée pour
+-## les LOD lointains, où le sous-voxel ne se voit pas.
+-func cave_at(bx: int, by: int, bz: int, surface_v: float) -> bool:
+-	var cx := float(bx * N + 1)
+-	var cy := float(by * N + 1)
+-	var cz := float(bz * N + 1)
+-	# Croûte : rien n'est creusé trop près de la surface, sauf aux entrées.
+-	if cy > surface_v - crust_voxels(cx, cz):
+-		return false
+-	var a := absf(_cave_a.get_noise_3d(cx, cy, cz)) - PTG.CAVE_WIDTH
+-	var b := absf(_cave_b.get_noise_3d(cx, cy, cz)) - PTG.CAVE_WIDTH
+-	if maxf(a, b) < 0.0:
+-		return true
+-	return _room_noise.get_noise_3d(cx, cy, cz) > PTG.ROOM_THRESHOLD
+-
+-
+-## Minerai éventuel de ce bloc (sinon -1). Les veines suivent les parois.
+-func ore_at(bx: int, by: int, bz: int, depth_v: float, near_cave: bool) -> int:
+-	if not near_cave or depth_v < PTG.ORE_MIN_DEPTH / PTG.VOXEL_SIZE:
+-		return -1
+-	var cx := float(bx * N + 1)
+-	var cy := float(by * N + 1)
+-	var cz := float(bz * N + 1)
+-	if _ore_noise.get_noise_3d(cx, cy, cz) * 0.5 + 0.5 < PTG.ORE_THRESHOLD:
+-		return -1
+-	var kind := _ore_type_noise.get_noise_3d(cx, cy, cz) * 0.5 + 0.5
+-	if kind < 0.4:
+-		return PTG.MAT_COAL
+-	if kind < 0.62:
+-		return PTG.MAT_IRON
+-	return PTG.MAT_COPPER
+-
+-
+-# --- Colonne de blocs ---------------------------------------------------------
+-
+-## Données d'une colonne de blocs : hauteur en sous-voxels, biome, matériaux.
+-## `snow` indique la dalle de neige posée sur le permafrost de la toundra.
+-func column_data(bx: int, bz: int) -> Dictionary:
+-	var cx := float(bx * N + 1)
+-	var cz := float(bz * N + 1)
+-	var h := surface_voxels(cx, cz)
+-	var temperature := temperature_at(cx, cz, h)
+-	var humidity := humidity_at(cx, cz)
+-	var biome: int = PTG.biome_from(temperature, humidity)
+-	var hs := int(floor(h + 0.5))
+-	var snow := biome == PTG.BIOME_TUNDRA
+-	if snow:
+-		# Toundra : sol de permafrost arasé au bloc, puis une dalle de neige.
+-		hs = int(floor(float(hs) / N + 0.5)) * N
+-	return {
+-		"h": h,                 # hauteur continue, en sous-voxels
+-		"hs": hs,               # hauteur du sol quantifiée, en sous-voxels
+-		"biome": biome,
+-		"snow": snow,           # dalle de neige d'un sous-voxel au-dessus
+-		"surface": PTG.MAT_PERMAFROST if snow else PTG.surface_material_of(biome),
+-	}
+-
+-
+-## Passe de lissage du champ de hauteur (GAME-1226), transposition du
+-## « Smooth World » de Terraria : la hauteur d'une colonne est moyennée avec
+-## celle de ses 8 voisines par un noyau binomial 1-2-1. Le bruit à l'échelle du
+-## bloc disparaît, les longues pentes deviennent régulières, et les montagnes ne
+-## bougent pas (leurs détails sont bien plus grands que 0.75 unité).
+-## PTG.SMOOTH_STRENGTH règle le dosage : 0 = pas de lissage, 1 = moyenne pleine.
+-func smoothed_height(bx: int, bz: int, heights: Dictionary) -> float:
+-	var raw: float = heights[Vector2i(bx, bz)]
+-	if PTG.SMOOTH_STRENGTH <= 0.0:
+-		return raw
+-	var total := 0.0
+-	for dz in range(-1, 2):
+-		for dx in range(-1, 2):
+-			var weight := float(KERNEL[(dz + 1) * 3 + dx + 1])
+-			total += weight * float(heights.get(Vector2i(bx + dx, bz + dz), raw))
+-	return lerpf(raw, total / 16.0, PTG.SMOOTH_STRENGTH)
+-
+-
+-## Hauteur continue au centre d'une colonne de blocs. Séparée de column_data :
+-## les colonnes de bordure ne servent qu'au lissage, inutile d'y calculer le
+-## biome et les matériaux.
+-func column_height(bx: int, bz: int) -> float:
+-	return surface_voxels(float(bx * N + 1), float(bz * N + 1))
+-
+-
+-## Même hauteur lissée, mais autonome (spawn, requêtes ponctuelles).
+-func smoothed_surface(bx: int, bz: int) -> float:
+-	var heights := {}
+-	for dz in range(-1, 2):
+-		for dx in range(-1, 2):
+-			heights[Vector2i(bx + dx, bz + dz)] = column_height(bx + dx, bz + dz)
+-	return smoothed_height(bx, bz, heights)
+-
+-
+-## Bruit blanc reproductible dans [0, 1], lié à la graine du monde.
+-static func _hash01(a: int, b: int) -> float:
+-	var h: int = a * 374761393 + b * 668265263 + PTG.world_seed * 2246822519
+-	h = (h ^ (h >> 13)) * 1274126177
+-	return float((h ^ (h >> 16)) & 0xFFFF) / 65535.0
+-
+-
+-## Pente du terrain à cette colonne, en TANGENTE (dénivelé / distance) : les
+-## hauteurs sont en sous-voxels et deux colonnes voisines sont à N sous-voxels
+-## l'une de l'autre, d'où la division par N.
+-func column_slope(bx: int, bz: int, smooth: Dictionary) -> float:
+-	var h0: float = smooth[Vector2i(bx, bz)]
+-	var gx: float = (float(smooth.get(Vector2i(bx + 1, bz), h0))
+-		- float(smooth.get(Vector2i(bx - 1, bz), h0))) * 0.5 / float(N)
+-	var gz: float = (float(smooth.get(Vector2i(bx, bz + 1), h0))
+-		- float(smooth.get(Vector2i(bx, bz - 1), h0))) * 0.5 / float(N)
+-	return sqrt(gx * gx + gz * gz)
+-
+-
+-## Matière de surface d'une colonne (GAME-1227) : l'herbe ne tient pas sur une
+-## pente, et les sommets sont rocheux. La limite d'altitude est brouillée par un
+-## bruit pour qu'elle ne dessine pas une ligne de niveau.
+-func surface_material(col: Dictionary, slope: float, altitude: float,
+-		cx: float, cz: float) -> int:
+-	var limit := PTG.ROCK_ALTITUDE + _rock_noise.get_noise_2d(cx, cz) \
+-		* PTG.ROCK_ALTITUDE_JITTER
+-	if slope > PTG.SLOPE_ROCK or altitude > limit:
+-		return PTG.MAT_ROCK
+-	var base: int = col["surface"]
+-	# Le sable et le permafrost restent eux-mêmes : de la terre à nu au milieu
+-	# d'une dune ou d'une toundra n'aurait pas de sens.
+-	if base == PTG.MAT_SAND or base == PTG.MAT_PERMAFROST:
+-		return base
+-	if slope > PTG.SLOPE_DIRT:
+-		return PTG.MAT_DIRT
+-	return base
+-
+-
+-## Amplitude du tramage pour ce bloc : maximale là où le terrain est plat (les
+-## paliers y sont larges), nulle dès que la pente les rend invisibles.
+-func dither_amount(slope: float) -> float:
+-	if PTG.SURFACE_DITHER <= 0.0:
+-		return 0.0
+-	return PTG.SURFACE_DITHER * clampf(1.0 - slope, 0.0, 1.0)
+-
+-
+-## Hauteur du sol, en sous-voxels, sous la SOUS-COLONNE (lx, lz) du bloc :
+-## interpolation bilinéaire entre les hauteurs lissées des colonnes voisines.
+-## C'est ce qui donne les diagonales et les coins — la surface se lit comme une
+-## courbe et non comme une marche par bloc.
+-func sub_top(bx: int, bz: int, lx: int, lz: int, smooth: Dictionary, snow: bool,
+-		dither: float = 0.0) -> int:
+-	var sx := 0
+-	var tx := 0.0
+-	if lx == 0:
+-		sx = -1
+-		tx = 1.0 / float(N)
+-	elif lx == N - 1:
+-		sx = 1
+-		tx = 1.0 / float(N)
+-	var sz := 0
+-	var tz := 0.0
+-	if lz == 0:
+-		sz = -1
+-		tz = 1.0 / float(N)
+-	elif lz == N - 1:
+-		sz = 1
+-		tz = 1.0 / float(N)
+-	var h00: float = smooth[Vector2i(bx, bz)]
+-	var h10: float = smooth.get(Vector2i(bx + sx, bz), h00)
+-	var h01: float = smooth.get(Vector2i(bx, bz + sz), h00)
+-	var h11: float = smooth.get(Vector2i(bx + sx, bz + sz), h00)
+-	var h := lerpf(lerpf(h00, h10, tx), lerpf(h01, h11, tx), tz)
+-	# Tramage : sans lui, une pente très douce produit de larges paliers plats
+-	# dont le bord dessine une courbe de niveau bien nette. Un demi-sous-voxel
+-	# de bruit blanc suffit à rendre ce bord irrégulier, donc invisible.
+-	if dither > 0.0:
+-		h += (_hash01(bx * N + lx, bz * N + lz) - 0.5) * dither
+-	var top := int(floor(h + 0.5))
+-	if snow:
+-		# Toundra : permafrost arasé au bloc, la neige se pose dessus.
+-		top = int(floor(float(top) / N + 0.5)) * N
+-	return top
+-
+-
+-## Colonne mise en cache : les LOD lointains relisent souvent la même.
+-func _cached_column(bx: int, bz: int, cache: Dictionary) -> Dictionary:
+-	var key := Vector2i(bx, bz)
+-	var col: Dictionary = cache.get(key, {})
+-	if col.is_empty():
+-		col = column_data(bx, bz)
+-		cache[key] = col
+-	return col
+-
+-
+-## Hauteur, en sous-voxels, où le NIVEAU 0 pose vraiment la surface : la dalle
+-## de neige de la toundra ajoute un sous-voxel, et le champ du niveau 0 étant
+-## binaire, la surface tombe à mi-chemin entre le dernier sous-voxel plein et le
+-## premier vide (d'où le -0.5). Les LOD lointains s'alignent dessus : sans ce
+-## décalage le raccord laisse une fente de ciel. On part de la hauteur CONTINUE
+-## et non de la quantifiée : de loin la quantification n'est que du bruit, et
+-## la passe de lissage ne déplace la surface que d'une fraction de sous-voxel.
+-static func center_surface(col: Dictionary) -> float:
+-	return float(col["h"]) - 0.5 + (1.0 if col["snow"] else 0.0)
+-
+-
+-## Index du bloc le plus haut qui contient de la matière (hors neige).
+-static func top_block(hs: int) -> int:
+-	return int(floor(float(hs - 1) / N)) if hs > 0 else -1
+-
+-
+-# --- Génération ---------------------------------------------------------------
+-
+-func _generate_block(out_buffer: VoxelBuffer, origin_in_voxels: Vector3i, lod: int) -> void:
+-	out_buffer.fill_f(AIR, VoxelBuffer.CHANNEL_SDF)
+-	if lod > 0:
+-		_generate_far(out_buffer, origin_in_voxels, lod)
+-		return
+-	_generate_near(out_buffer, origin_in_voxels)
+-	out_buffer.compress_uniform_channels()
+-
+-
+-## LOD 0 : relief LISSÉ, avec une hauteur de sol par SOUS-COLONNE.
+-##
+-## Trois règles empruntées à Terraria et à Minecraft :
+-##   - une passe de moyenne sur le champ de hauteur (voir smoothed_height) ;
+-##   - la hauteur est lue au pas de 0.25 EN HORIZONTAL aussi : chacune des 9
+-##     sous-colonnes d'un bloc a sa propre hauteur, interpolée entre les
+-##     colonnes voisines (voir sub_top) ;
+-##   - les grottes sont un champ continu interpolé entre les coins des blocs
+-##     (voir cave_density), donc creusées au sous-voxel elles aussi.
+-func _generate_near(out_buffer: VoxelBuffer, origin: Vector3i) -> void:
+-	var size := out_buffer.get_size()
+-	var bx0 := _block_of(origin.x)
+-	var bx1 := _block_of(origin.x + size.x - 1)
+-	var bz0 := _block_of(origin.z)
+-	var bz1 := _block_of(origin.z + size.z - 1)
+-	var by0 := _block_of(origin.y)
+-	var by1 := _block_of(origin.y + size.y - 1)
+-
+-	# Bordure de 2 blocs : la bilinéaire lit un voisin, le lissage un de plus.
+-	# Seule la hauteur y est calculée ; le biome ne sert qu'aux blocs écrits.
+-	var heights := {}
+-	for bx in range(bx0 - 2, bx1 + 3):
+-		for bz in range(bz0 - 2, bz1 + 3):
+-			heights[Vector2i(bx, bz)] = column_height(bx, bz)
+-
+-	# Hauteurs lissées, bordure de 1 bloc (ce que lit la bilinéaire).
+-	var smooth := {}
+-	for bx in range(bx0 - 1, bx1 + 2):
+-		for bz in range(bz0 - 1, bz1 + 2):
+-			smooth[Vector2i(bx, bz)] = smoothed_height(bx, bz, heights)
+-
+-	var corners := {}
+-	var tops := PackedInt32Array()
+-	tops.resize(N * N)
+-	for bx in range(bx0, bx1 + 1):
+-		for bz in range(bz0, bz1 + 1):
+-			var col: Dictionary = column_data(bx, bz)
+-			var slope := column_slope(bx, bz, smooth)
+-			var dither := dither_amount(slope)
+-			var snow: bool = col["snow"]
+-			for lx in N:
+-				for lz in N:
+-					tops[lx * N + lz] = sub_top(bx, bz, lx, lz, smooth, snow, dither)
+-			var center_top: int = tops[N + 1]
+-			var skin := surface_material(col, slope, float(center_top) * PTG.VOXEL_SIZE,
+-				float(bx * N + 1), float(bz * N + 1))
+-			# Pas de dalle de neige sur de la roche à nu : la pente l'emporte.
+-			var slab := snow and skin != PTG.MAT_ROCK
+-			# Profondeur à partir de laquelle une grotte peut creuser ici.
+-			var carve_limit := float(center_top) - crust_voxels(
+-				float(bx * N + 1), float(bz * N + 1))
+-			for by in range(by0, by1 + 1):
+-				if by * N > center_top + N:
+-					continue
+-				var dc := cave_density(float(bx * N + 1), float(by * N + 1),
+-					float(bz * N + 1))
+-				# Loin de toute grotte : le bloc se remplit d'un bloc, sans test.
+-				var carving := dc > -CAVE_MARGIN and float(by * N + N) < carve_limit + float(N)
+-				if dc > CAVE_MARGIN and float(by * N + N) < carve_limit:
+-					continue    # entièrement creusé
+-				var material := _block_material(bx, by, bz, center_top, skin, dc)
+-				_write_column_block(out_buffer, origin, bx, by, bz, tops, material,
+-					slab, carving, carve_limit, corners)
+-
+-
+-## Remplit un bloc sous-colonne par sous-colonne, jusqu'à la hauteur de chacune.
+-## `carving` dit que ce bloc touche une grotte : il faut alors tester chaque
+-## sous-voxel contre le champ interpolé plutôt que remplir la tranche d'un coup.
+-func _write_column_block(out_buffer: VoxelBuffer, origin: Vector3i,
+-		bx: int, by: int, bz: int, tops: PackedInt32Array, material: int,
+-		snow: bool, carving: bool, carve_limit: float, corners: Dictionary) -> void:
+-	var size := out_buffer.get_size()
+-	var base := by * N
+-	var c000 := 0.0
+-	var c100 := 0.0
+-	var c010 := 0.0
+-	var c110 := 0.0
+-	var c001 := 0.0
+-	var c101 := 0.0
+-	var c011 := 0.0
+-	var c111 := 0.0
+-	if carving:
+-		c000 = _corner_density(bx, by, bz, corners)
+-		c100 = _corner_density(bx + 1, by, bz, corners)
+-		c010 = _corner_density(bx, by + 1, bz, corners)
+-		c110 = _corner_density(bx + 1, by + 1, bz, corners)
+-		c001 = _corner_density(bx, by, bz + 1, corners)
+-		c101 = _corner_density(bx + 1, by, bz + 1, corners)
+-		c011 = _corner_density(bx, by + 1, bz + 1, corners)
+-		c111 = _corner_density(bx + 1, by + 1, bz + 1, corners)
+-	for lx in N:
+-		var vx := bx * N + lx - origin.x
+-		if vx < 0 or vx >= size.x:
+-			continue
+-		var tx := (float(lx) + 0.5) / float(N)
+-		for lz in N:
+-			var vz := bz * N + lz - origin.z
+-			if vz < 0 or vz >= size.z:
+-				continue
+-			var tz := (float(lz) + 0.5) / float(N)
+-			var top: int = tops[lx * N + lz]
+-			var y0 := base
+-			var y1 := mini(base + N - 1, top - 1)
+-			if y1 >= y0:
+-				if carving:
+-					# Densité interpolée sur les arêtes verticales de la colonne.
+-					var d0 := lerpf(lerpf(c000, c100, tx), lerpf(c001, c101, tx), tz)
+-					var d1 := lerpf(lerpf(c010, c110, tx), lerpf(c011, c111, tx), tz)
+-					for y in range(y0, y1 + 1):
+-						var ty := (float(y - base) + 0.5) / float(N)
+-						if float(y) < carve_limit and lerpf(d0, d1, ty) > 0.0:
+-							continue
+-						_put(out_buffer, origin, vx, y, vz, size, material)
+-				else:
+-					var a0 := maxi(y0 - origin.y, 0)
+-					var a1 := mini(y1 - origin.y, size.y - 1)
+-					if a1 >= a0:
+-						var lo := Vector3i(vx, a0, vz)
+-						var hi := Vector3i(vx + 1, a1 + 1, vz + 1)
+-						out_buffer.fill_area_f(SOLID, lo, hi, VoxelBuffer.CHANNEL_SDF)
+-						out_buffer.fill_area(material, lo, hi, VoxelBuffer.CHANNEL_INDICES)
+-			# Toundra : la dalle de neige, un sous-voxel posé sur le permafrost.
+-			if not snow or top < base or top > base + N - 1:
+-				continue
+-			_put(out_buffer, origin, vx, top, vz, size, PTG.MAT_SNOW)
+-
+-
+-## Écrit un sous-voxel plein, si le tampon le contient.
+-func _put(out_buffer: VoxelBuffer, origin: Vector3i, vx: int, y: int, vz: int,
+-		size: Vector3i, material: int) -> void:
+-	var vy := y - origin.y
+-	if vy < 0 or vy >= size.y:
+-		return
+-	out_buffer.set_voxel_f(SOLID, vx, vy, vz, VoxelBuffer.CHANNEL_SDF)
+-	out_buffer.set_voxel(material, vx, vy, vz, VoxelBuffer.CHANNEL_INDICES)
+-
+-
+-## Matériau du bloc : biome en surface, terre, roche, minerai en profondeur.
+-func _block_material(bx: int, by: int, bz: int, hs: int, skin: int,
+-		cave: float) -> int:
+-	var center := by * N + 1
+-	var depth := float(hs - center)
+-	if depth <= PTG.TOP_LAYER / PTG.VOXEL_SIZE:
+-		return skin
+-	if depth <= PTG.SUB_DEPTH / PTG.VOXEL_SIZE:
+-		if skin == PTG.MAT_SAND:
+-			return PTG.MAT_SAND
+-		if skin == PTG.MAT_ROCK:
+-			return PTG.MAT_ROCK
+-		return PTG.MAT_DIRT
+-	# Les veines de minerai suivent les parois : il suffit d'être près du champ.
+-	var ore := ore_at(bx, by, bz, depth, cave > -CAVE_MARGIN)
+-	return ore if ore >= 0 else PTG.MAT_ROCK
+-
+-
+-## LOD lointains : MÊME surface que le niveau 0, mais échantillonnée.
+-##
+-## ATTENTION : `origin_in_voxels` est TOUJOURS donné en voxels du niveau 0, y
+-## compris pour les LOD lointains ; seul le PAS entre deux voxels du tampon vaut
+-## 2^lod. C'était la cause des éclats : en prenant l'origine pour des voxels du
+-## niveau courant, les niveaux lointains décrivaient un terrain pris 2^lod fois
+-## trop loin, sans aucun rapport avec le niveau fin.
+-##
+-## Les deux niveaux partent de la même hauteur (voir center_surface). Le champ
+-## lointain est dégradé et non binaire : de loin les blocs ne se voient pas, et
+-## un champ dégradé se raccorde proprement aux cellules de transition.
+-func _generate_far(out_buffer: VoxelBuffer, origin: Vector3i, lod: int) -> void:
+-	var size := out_buffer.get_size()
+-	var step := 1 << lod
+-	var stepf := float(step)
+-	var columns := {}
+-	var caves := {}
+-	var sub_depth := PTG.SUB_DEPTH / PTG.VOXEL_SIZE
+-
+-	# Première passe : la hauteur de chaque colonne échantillonnée. La pente se
+-	# lit ensuite sur cette grille — à la résolution du niveau, qui est aussi
+-	# celle du maillage lointain, donc gratuitement.
+-	var grid := PackedFloat32Array()
+-	grid.resize(size.x * size.z)
+-	for ix in size.x:
+-		var bxi := _block_of(origin.x + ix * step)
+-		for iz in size.z:
+-			var bzi := _block_of(origin.z + iz * step)
+-			grid[ix * size.z + iz] = center_surface(_cached_column(bxi, bzi, columns))
+-
+-	for ix in size.x:
+-		var wx := origin.x + ix * step
+-		var bx := _block_of(wx)
+-		for iz in size.z:
+-			var wz := origin.z + iz * step
+-			var bz := _block_of(wz)
+-			var col := _cached_column(bx, bz, columns)
+-			var hs := grid[ix * size.z + iz]
+-
+-			var xa: float = grid[maxi(ix - 1, 0) * size.z + iz]
+-			var xb: float = grid[mini(ix + 1, size.x - 1) * size.z + iz]
+-			var za: float = grid[ix * size.z + maxi(iz - 1, 0)]
+-			var zb: float = grid[ix * size.z + mini(iz + 1, size.z - 1)]
+-			var gx := (xb - xa) * 0.5 / stepf
+-			var gz := (zb - za) * 0.5 / stepf
+-			var slope := sqrt(gx * gx + gz * gz)
+-			var skin := surface_material(col, slope, hs * PTG.VOXEL_SIZE,
+-				float(bx * N + 1), float(bz * N + 1))
+-
+-			# Indice, dans ce tampon, du dernier voxel sous la surface.
+-			var top := int(floor((hs - float(origin.y)) / stepf))
+-			if top < 0:
+-				continue
+-			var solid_top := mini(top - 2, size.y - 1)
+-			if solid_top >= 0:
+-				out_buffer.fill_area_f(SOLID, Vector3i(ix, 0, iz),
+-					Vector3i(ix + 1, solid_top + 1, iz + 1), VoxelBuffer.CHANNEL_SDF)
+-			for y in range(maxi(top - 2, 0), mini(top + 2, size.y)):
+-				var wy := float(origin.y + y * step)
+-				out_buffer.set_voxel_f(clampf((wy - hs) / stepf, -1.0, 1.0),
+-					ix, y, iz, VoxelBuffer.CHANNEL_SDF)
+-
+-			# Matériaux : roche en profondeur, matière de surface par-dessus.
+-			var hi := Vector3i(ix + 1, mini(top + 1, size.y), iz + 1)
+-			if hi.y > 0:
+-				out_buffer.fill_area(PTG.MAT_ROCK, Vector3i(ix, 0, iz), hi,
+-					VoxelBuffer.CHANNEL_INDICES)
+-				var top_layer := maxi(top - maxi(int(sub_depth / stepf), 1), 0)
+-				out_buffer.fill_area(skin, Vector3i(ix, top_layer, iz), hi,
+-					VoxelBuffer.CHANNEL_INDICES)
+-				if col["snow"] and skin != PTG.MAT_ROCK and top < size.y:
+-					out_buffer.fill_area(PTG.MAT_SNOW, Vector3i(ix, top, iz), hi,
+-						VoxelBuffer.CHANNEL_INDICES)
+-
+-			# Grottes : seulement au premier niveau lointain, où les entrées à
+-			# flanc de colline se voient encore.
+-			if lod > 1:
+-				continue
+-			for y in range(0, mini(top, size.y)):
+-				var cave_key := Vector3i(bx, _block_of(origin.y + y * step), bz)
+-				var carved = caves.get(cave_key)
+-				if carved == null:
+-					carved = cave_at(cave_key.x, cave_key.y, cave_key.z, float(col["h"]))
+-					caves[cave_key] = carved
+-				if carved:
+-					out_buffer.set_voxel_f(AIR, ix, y, iz, VoxelBuffer.CHANNEL_SDF)
+-
+-
+-static func _block_of(voxel: int) -> int:
+-	return int(floor(float(voxel) / N))
+diff --git a/world/world_generator.gd.uid b/world/world_generator.gd.uid
+deleted file mode 100644
+index 724d405..0000000
+--- a/world/world_generator.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://cyq3n2ngxd1dn

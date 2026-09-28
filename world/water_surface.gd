@@ -1,15 +1,16 @@
 class_name WaterSurface
 extends Node3D
-## Surface de l'eau : maillage en tuiles autour du joueur (GAME-1233).
+## Surface de l'eau (GAME-1233).
 ##
-## L'eau étant une hauteur par colonne, sa surface est un champ 2D : on la
-## maille en quadrilatères horizontaux, fusionnés en rectangles maximaux
-## (maillage glouton). La mer, qui est plate, se réduit ainsi à une poignée de
-## rectangles par tuile au lieu de 256 quads.
+## The SEA is one flat disc at sea level that follows the player. The terrain
+## is drawn first and hides it wherever the ground is above the sea, so the
+## shoreline is exactly the terrain contour. (Before, the sea was made of
+## 0.75-unit quads per block column: at the shore they overhung the slope and
+## looked like plates floating above the ground.)
 ##
-## Au-delà des tuiles, un anneau plat ferme l'horizon. C'est un anneau et non un
-## disque : il ne recouvre jamais la zone maillée, donc aucun conflit de
-## profondeur, et il disparaît quand la caméra passe sous l'eau.
+## Water that is NOT at sea level (a column the flow has filled or drained) is
+## still meshed in tiles around the player, merged into maximal rectangles
+## (greedy meshing).
 
 const PTG := preload("res://world/procedural_terrain_generator.gd")
 const Field := preload("res://world/water_field.gd")
@@ -18,10 +19,11 @@ const Field := preload("res://world/water_field.gd")
 const TILE := 16
 ## Rayon maillé, en tuiles (8 x 12 = 96 unités).
 const TILE_RADIUS := 8
-## Rayons de l'anneau d'horizon, en unités.
-const RING_INNER := 96.0
-const RING_OUTER := 1500.0
-const RING_SEGMENTS := 48
+## Radius of the sea disc, in units, and its number of segments.
+const SEA_RADIUS := 1500.0
+const SEA_SEGMENTS := 48
+## Below this gap (voxels) a water column is at sea level: the disc draws it.
+const SEA_TOLERANCE := 0.05
 
 ## Nombre de colonnes que l'écoulement traite par image.
 const FLOW_BUDGET := 400
@@ -63,10 +65,9 @@ func _process(_delta: float) -> void:
 	_rebuild_pending()
 
 	if _ring != null:
+		# Also visible from below: it is the surface seen while swimming.
 		_ring.global_position = Vector3(position.x, field.sea_level() * PTG.VOXEL_SIZE,
 			position.z)
-		# Sous l'eau, l'anneau se verrait à travers le sol : on le cache.
-		_ring.visible = position.y > field.sea_level() * PTG.VOXEL_SIZE
 
 
 ## Altitude de la surface de l'eau à cette position du monde, ou NAN s'il n'y a
@@ -147,8 +148,11 @@ func _tile_mesh(tile: Vector2i) -> ArrayMesh:
 	for ix in TILE:
 		for iz in TILE:
 			var s: float = field.surface_at(base_x + ix, base_z + iz)
-			levels[ix * TILE + iz] = NAN if s == Field.DRY else s
-			if s != Field.DRY:
+			# Dry, or at sea level: the sea disc already draws it.
+			if s == Field.DRY or absf(s - field.sea_level()) < SEA_TOLERANCE:
+				levels[ix * TILE + iz] = NAN
+			else:
+				levels[ix * TILE + iz] = s
 				any = true
 	if not any:
 		return null
@@ -228,14 +232,13 @@ func _build_ring() -> void:
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs := PackedVector2Array()
-	for i in RING_SEGMENTS:
-		var a0 := TAU * float(i) / float(RING_SEGMENTS)
-		var a1 := TAU * float(i + 1) / float(RING_SEGMENTS)
-		var inner0 := Vector3(cos(a0) * RING_INNER, 0.0, sin(a0) * RING_INNER)
-		var inner1 := Vector3(cos(a1) * RING_INNER, 0.0, sin(a1) * RING_INNER)
-		var outer0 := Vector3(cos(a0) * RING_OUTER, 0.0, sin(a0) * RING_OUTER)
-		var outer1 := Vector3(cos(a1) * RING_OUTER, 0.0, sin(a1) * RING_OUTER)
-		for v in [inner0, outer0, outer1, inner0, outer1, inner1]:
+	# A fan of triangles around the centre: a flat disc.
+	for i in SEA_SEGMENTS:
+		var a0 := TAU * float(i) / float(SEA_SEGMENTS)
+		var a1 := TAU * float(i + 1) / float(SEA_SEGMENTS)
+		var outer0 := Vector3(cos(a0) * SEA_RADIUS, 0.0, sin(a0) * SEA_RADIUS)
+		var outer1 := Vector3(cos(a1) * SEA_RADIUS, 0.0, sin(a1) * SEA_RADIUS)
+		for v in [Vector3.ZERO, outer0, outer1]:
 			verts.push_back(v)
 			normals.push_back(Vector3.UP)
 			uvs.push_back(Vector2(v.x, v.z))
@@ -250,5 +253,5 @@ func _build_ring() -> void:
 	_ring.mesh = mesh
 	_ring.material_override = _material
 	_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_ring.extra_cull_margin = RING_OUTER
+	_ring.extra_cull_margin = SEA_RADIUS
 	add_child(_ring)

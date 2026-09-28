@@ -17,12 +17,17 @@ const GAME_SCENE: String = "res://world/terrain_player_test.tscn"
 func start_new_game() -> void:
 	set_paused(false)
 	SaveManager.delete_save()
+	# A new world starts on the first morning. The world scene starts the clock
+	# once the player is on the ground.
+	TimeOfDay.reset()
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 
 ## Reprend la partie sauvegardée.
 func continue_game() -> void:
 	set_paused(false)
+	# The saved time is applied below; it must not move while the world loads.
+	TimeOfDay.stop_clock()
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 	# Deux tours : le premier effectue le changement de scène, le second laisse
@@ -35,6 +40,8 @@ func continue_game() -> void:
 
 ## Revient à l'écran titre.
 func return_to_menu() -> void:
+	# Stopped BEFORE unpausing: the clock must not tick on the title screen.
+	TimeOfDay.stop_clock()
 	set_paused(false)
 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
 

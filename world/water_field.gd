@@ -28,19 +28,16 @@ const EPSILON := 0.01
 ## l'eau oscille entre deux colonnes au lieu de se poser.
 const TRANSFER := 0.45
 
-var _generator                      # WorldGenerator
 var _sea: float                     # niveau de la mer, en sous-voxels
 var _levels: Dictionary = {}        # Vector2i -> float : colonnes hors règle
-var _raw: Dictionary = {}           # Vector2i -> float : hauteurs brutes
-var _ground: Dictionary = {}        # Vector2i -> float : cache du sol lissé
+var _ground: Dictionary = {}        # Vector2i -> float : ground height cache
 var _active: Dictionary = {}        # Vector2i -> true : colonnes à faire couler
 var _dirty: Dictionary = {}         # Vector2i -> true : colonnes à remailler
 
 const OFFSETS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 
 
-func _init(generator) -> void:
-	_generator = generator
+func _init() -> void:
 	_sea = PTG.SEA_LEVEL / PTG.VOXEL_SIZE
 
 
@@ -51,23 +48,14 @@ func sea_level() -> float:
 
 # --- Lecture ------------------------------------------------------------------
 
-## Altitude du sol de cette colonne, en sous-voxels — la même hauteur lissée
-## que celle dont le générateur tire le terrain.
-##
-## Deux caches : les hauteurs brutes, partagées entre voisines (le lissage en
-## lit neuf par colonne, sans cache on paierait neuf fois le bruit), et le
-## résultat lissé.
+## Ground height of this block column, in voxels: the same quantized surface
+## the terrain graph generates (ProceduralTerrainGenerator.block_ground_voxels).
 func ground_at(bx: int, bz: int) -> float:
 	var key := Vector2i(bx, bz)
 	var g = _ground.get(key)
 	if g != null:
 		return g
-	for dz in range(-1, 2):
-		for dx in range(-1, 2):
-			var near := Vector2i(bx + dx, bz + dz)
-			if not _raw.has(near):
-				_raw[near] = _generator.column_height(near.x, near.y)
-	g = _generator.smoothed_height(bx, bz, _raw)
+	g = PTG.block_ground_voxels(bx, bz)
 	_ground[key] = g
 	return g
 

@@ -20,12 +20,22 @@ signal day_night_changed(is_night: bool)
 ## Heure à laquelle le soleil se couche.
 @export var sunset_hour: float = 20.0
 ## Si faux, le temps ne s'écoule plus.
-@export var running: bool = true
+##
+## Off by default: the clock only runs while a world is actually being played.
+## As an autoload it lives for the whole application, so if it ran by default
+## it would keep advancing on the title screen and during the loading screen
+## (quit at 18:00, come back later: it was already the next morning).
+## GameManager and the world scene switch it on and off.
+@export var running: bool = false
+
+## Time and day at the start of a new game.
+const START_TIME: float = 8.0
+const START_DAY: int = 1
 
 ## Heure courante, de 0.0 à 24.0.
-var time_of_day: float = 8.0
+var time_of_day: float = START_TIME
 ## Numéro du jour, à partir de 1.
-var day: int = 1
+var day: int = START_DAY
 
 var _last_emitted_hour: int = -1
 var _was_night: bool = false
@@ -66,6 +76,22 @@ func get_clock_text() -> String:
 	var hours := int(time_of_day)
 	var minutes := int((time_of_day - hours) * 60.0)
 	return "%02d:%02d" % [hours, minutes]
+
+
+## Starts the clock (the world is ready and the player can play).
+func start_clock() -> void:
+	running = true
+
+
+## Stops the clock (loading, title screen, leaving the world).
+func stop_clock() -> void:
+	running = false
+
+
+## Back to the first morning, for a new game. The clock stays stopped.
+func reset() -> void:
+	running = false
+	set_time(START_TIME, START_DAY)
 
 
 ## Force l'heure, par exemple au chargement d'une sauvegarde.

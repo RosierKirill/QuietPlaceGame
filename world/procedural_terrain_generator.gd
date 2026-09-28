@@ -1,106 +1,99 @@
 extends RefCounted
 class_name ProceduralTerrainGenerator
-## Générateur procédural du monde (Epic E12 · Terrain voxel) — version 3.
+## World generation settings and entry points (Epic E12 · Voxel terrain).
 ##
-## TROIS IDÉES CLÉS (notes Notion du 22/09/2026) :
+## Generation runs in a VoxelGeneratorGraph (see TerrainGraph): the graph is
+## compiled to native code by Voxel Tools, which keeps streaming fast enough to
+## never leave holes around the player. The same formulas are mirrored in
+## GDScript by TerrainShape for point queries (spawn, water, biomes).
 ##
-## 1. GRILLE EN BLOCS. Un voxel vaut VOXEL_SIZE (0.25 unité), un bloc vaut
-##    BLOCK_SIZE (0.75 unité = 3 voxels). Le relief est quantifié par paliers
-##    d'un bloc : on obtient des terrasses franches, et le mailleur lisse ne
-##    produit plus que des faces à 0°, 45° et 90° — l'aspect « bloc arrondi »
-##    façon Terraria, sans changer de moteur de rendu.
-##
-## 2. GROTTES EN COULOIRS + SALLES. L'ancienne formule (une seule bande de
-##    bruit 3D) creusait des NAPPES, d'où l'effet gruyère. Ici deux bandes de
-##    bruit se croisent : leur intersection est un TUBE. Des salles plus larges
-##    s'ouvrent de loin en loin sur ces couloirs, et les minerais apparaissent
-##    en veines sur leurs parois.
-##
-## 3. BIOMES PAR TEMPÉRATURE ET HUMIDITÉ. Deux champs de bruit basse fréquence,
-##    la température baissant avec l'altitude, donnent les 7 biomes de la note :
-##    toundra, taïga, forêt tempérée, prairie tempérée, désert, forêt humide,
-##    savane. Le biome choisit le matériau de surface ; le shader teinte la
-##    végétation selon ce matériau.
+## Both read the SAME noise resources, created here once per seed. This is what
+## keeps the graph and the queries in agreement.
 ##
 ## CONVENTIONS
-##   - Le GRAPHE travaille en VOXELS (le terrain est mis à l'échelle VOXEL_SIZE).
-##   - Les constantes ci-dessous sont en UNITÉS DE MONDE, converties au besoin.
-##   - SDF : négatif = matière.
-##   - get_height() renvoie une hauteur en unités de monde et DOIT rester
-##     identique au graphe (elle sert au spawn).
+##   - The terrain is scaled by VOXEL_SIZE: the graph works in VOXELS.
+##   - Constants below are in WORLD UNITS unless their name ends with _V.
+##   - SDF: negative = matter.
 
-## Graine du monde. Ce n'est PLUS une constante : chaque partie peut avoir la
-## sienne (GAME-1219). Toujours la fixer AVANT d'appeler build().
+# TerrainGraph and TerrainShape read the constants of this file: they are loaded
+# lazily here, a preload in both directions would be circular.
+const TERRAIN_GRAPH_PATH := "res://world/terrain_graph.gd"
+const TERRAIN_SHAPE_PATH := "res://world/terrain_shape.gd"
+
+## World seed. Set it BEFORE build() and before any query.
 static var world_seed: int = 1337
 
-# --- Grille ---
-const VOXEL_SIZE := 0.25             # taille d'un voxel, en unités de monde
-const BLOCK_SIZE := 0.75             # un bloc = 3 voxels
+# --- Grid ---
+const VOXEL_SIZE := 0.25             # one voxel, in world units
+const BLOCK_SIZE := 0.75             # one block = 3 voxels
 const BLOCK_VOXELS := 3
 
-# --- Relief (unités de monde) ---
-const HEIGHT_FREQUENCY := 0.0016
-const HEIGHT_OCTAVES := 4
-const WARP_AMPLITUDE := 40.0
-const BASE_AMPLITUDE := 30.0
-const MOUNTAIN_AMPLITUDE := 190.0
-const MASK_FREQUENCY := 0.0007
-const RIDGE_FREQUENCY := 0.010
-const RIDGE_AMPLITUDE := 55.0
+# --- Relief (world units) ---
+# Rolling grassy hills everywhere, and separate rocky massifs rising from them
+# (reference pictures: alpine meadow with rocky peaks, anime valley with lakes).
+const BASE_HEIGHT := 12.0            # mean ground height of the plains
+const HILLS_AMPLITUDE := 12.0        # plains range from 0 to 24 units
+const HILLS_PERIOD := 380.0          # width of a hill
+const HILLS_OCTAVES := 4
+const MASK_PERIOD := 1400.0          # size of mountain regions
+const MASK_LOW := 0.35               # raw mask value where mountains start
+const MASK_HIGH := 0.65              # raw mask value where they reach full height
+const MOUNTAIN_AMPLITUDE := 130.0    # extra height of a full massif
+const MOUNTAIN_PERIOD := 260.0       # width of a peak
+const MOUNTAIN_OCTAVES := 5
+# Tiny white-noise offset on the surface: breaks the contour lines that
+# quantization draws on very gentle slopes. In voxels.
+const DITHER_AMPLITUDE_V := 0.4
+const DITHER_PERIOD_V := 2.0
 
-# --- Grottes (unités de monde) ---
-const CAVE_FREQUENCY := 0.018        # finesse des couloirs
-const CAVE_WIDTH := 0.11            # demi-largeur des bandes croisées
-const ROOM_FREQUENCY := 0.02        # taille des salles
-const ROOM_THRESHOLD := 0.70         # plus haut = salles plus rares
-const CAVE_SMOOTHNESS := 1.5
-# --- Eau (GAME-1232) ---
-# Niveau de la mer, en unités. Toute colonne dont le sol est en dessous est de
-# la mer. Le plancher du relief étant à ~1.9, une mer à 8 couvre 21 % du monde.
+# --- Sea ---
 const SEA_LEVEL := 8.0
 
-const SURFACE_CRUST := 8.0           # épaisseur de sol plein sous la surface
-# Entrées de grottes (GAME-1227) : un bruit de basse fréquence désigne des
-# taches où la croûte s'amincit jusqu'à disparaître. Un tunnel qui passe sous
-# une tache débouche donc à l'air libre.
-const ENTRANCE_FREQUENCY := 0.02     # taille des taches d'entrée
-const ENTRANCE_THRESHOLD := 0.78     # au-delà, la croûte commence à s'amincir
-const ENTRANCE_OPEN := 0.86          # au-delà, plus de croûte du tout
+# --- Caves (world units) ---
+const CAVE_PERIOD := 55.0            # size of tunnels
+const CAVE_WIDTH := 0.11             # half width of the crossing noise bands
+const ROOM_PERIOD := 50.0            # size of rooms
+const ROOM_THRESHOLD := 0.70         # higher = rarer rooms
+const SURFACE_CRUST := 8.0           # solid ground kept above caves
+const ENTRANCE_PERIOD := 50.0        # size of the spots where caves open
+const ENTRANCE_LOW := 0.56           # raw noise value where the crust thins
+const ENTRANCE_HIGH := 0.72          # raw noise value where it is gone
+# How fast caves are closed off inside the crust, per voxel of missing depth.
+const CRUST_TAPER := 0.05
+# Near the surface of an entrance, tunnels are widened by this much so they
+# open cleanly instead of leaving thin floating lips.
+const ENTRANCE_WIDEN := 0.12
+const ENTRANCE_ROOF_V := 6.0         # depth (voxels) over which widening fades
+# Voxels closer than this to a cave (in cave-field units, about 2 voxels) are
+# cave walls: they are always rock, never grass or dirt.
+const CAVE_WALL_BAND := 0.06
 
-# --- Minerais ---
-const ORE_FREQUENCY := 0.05          # taille des veines
-const ORE_TYPE_FREQUENCY := 0.004    # zones à charbon / fer / cuivre
-const ORE_WALL_BAND := 2.0           # distance max à la paroi (unités)
-const ORE_THRESHOLD := 0.55          # plus haut = minerais plus rares
+# --- Ores ---
+const ORE_PERIOD := 20.0             # size of veins
+const ORE_TYPE_PERIOD := 250.0       # coal / iron / copper regions
+const ORE_THRESHOLD := 0.55          # higher = rarer ores
+const ORE_NEAR_CAVE := 0.22          # veins follow cave walls
 const ORE_MIN_DEPTH := 10.0
 
 # --- Biomes ---
-const TEMPERATURE_FREQUENCY := 0.0004
-const HUMIDITY_FREQUENCY := 0.0005
-const COLD_ALTITUDE_START := 60.0    # au-dessus, il commence à faire plus froid
-const COLD_ALTITUDE_RANGE := 300.0   # altitude qui retire 1.0 de température
+const TEMPERATURE_PERIOD := 2500.0
+const HUMIDITY_PERIOD := 2000.0
+const COLD_ALTITUDE_START := 60.0    # above this, it gets colder
+const COLD_ALTITUDE_RANGE := 300.0   # altitude that removes 1.0 of temperature
 
-# --- Couches ---
-const TOP_LAYER := 0.75              # épaisseur de la couche de surface
-const SUB_DEPTH := 4.0               # profondeur où commence la roche
-const ROCK_ALTITUDE := 110.0         # au-delà, sommets rocheux
-const ROCK_ALTITUDE_JITTER := 25.0   # irrégularité de cette limite (unités)
-const SLOPE_STEP := 1.0              # pas (unités) de la mesure de pente
-const SLOPE_DIRT := 1.8              # pente (tangente) au-delà : plus d'herbe
-const SLOPE_ROCK := 2.6              # pente au-delà : roche à nu
+# --- Layers (vertical rule: top block, then dirt, then stone) ---
+const TOP_LAYER_V := 3               # the top block: 3 voxels = 0.75
+const SUB_DEPTH := 4.0               # stone starts this deep
+const ROCK_ALTITUDE := 110.0         # summits above this are bare rock
+const ROCK_ALTITUDE_JITTER := 25.0
+const ROCK_NOISE_PERIOD := 250.0
+const SLOPE_ROCK := 1.6              # slope (tangent) above which rock shows
+const SLOPE_SAMPLE_V := 2.0          # distance used to measure the slope
 
-# --- Lissage du relief (GAME-1226) ---
-# Dosage de la passe de moyenne sur le champ de hauteur : 0 = aucun lissage,
-# 1 = moyenne pleine (noyau binomial 1-2-1 sur les 8 colonnes voisines).
-const SMOOTH_STRENGTH := 1.0
-# Tramage de la surface, en sous-voxels crête à crête : casse les courbes de
-# niveau que la quantification dessine sur les pentes très douces. 0 = aucun.
-const SURFACE_DITHER := 0.8
-
-# --- Matériaux (indice écrit dans le canal INDICES) ---
-const MAT_GRASS := 0                 # herbe tempérée
-const MAT_GRASS_DRY := 1             # herbe sèche (savane, prairie sèche)
-const MAT_GRASS_COLD := 2            # herbe froide (taïga)
+# --- Materials (index written in the INDICES channel) ---
+const MAT_GRASS := 0                 # temperate grass
+const MAT_GRASS_DRY := 1             # dry grass (savanna, prairie)
+const MAT_GRASS_COLD := 2            # cold grass (taiga)
 const MAT_DIRT := 3
 const MAT_ROCK := 4
 const MAT_SAND := 5
@@ -114,7 +107,7 @@ const MATERIAL_NAMES := [
 	"sable", "neige", "charbon", "fer", "cuivre", "permafrost",
 ]
 
-# --- Biomes (valeurs de retour de get_biome) ---
+# --- Biomes (values returned by get_biome) ---
 const BIOME_TUNDRA := 0
 const BIOME_TAIGA := 1
 const BIOME_TEMPERATE_FOREST := 2
@@ -127,16 +120,14 @@ const BIOME_NAMES := [
 	"désert", "forêt humide", "savane",
 ]
 
-# Seuils de la pyramide température × humidité (note Notion).
-# Ils ne sont PAS constants : chaque graine tire les siens dans ces plages, donc
-# un monde peut être très désertique et un autre très froid. Les plages
-# ci-dessous sont les seules valeurs réglées à la main — à ajuster librement.
-const RANGE_T_TUNDRA := Vector2(0.10, 0.28)      # fin de la toundra
-const RANGE_T_TAIGA := Vector2(0.10, 0.26)       # largeur de la taïga
-const RANGE_T_HOT := Vector2(0.20, 0.38)         # largeur des terres tempérées
-const RANGE_H_DESERT := Vector2(0.14, 0.36)      # fin du désert
-const RANGE_H_FOREST := Vector2(0.14, 0.30)      # largeur des prairies
-const RANGE_H_RAIN := Vector2(0.05, 0.20)        # largeur de la savane
+# Biome thresholds of the temperature x humidity pyramid. Each seed draws its
+# own inside these ranges, so one world can be mostly desert and another cold.
+const RANGE_T_TUNDRA := Vector2(0.10, 0.28)
+const RANGE_T_TAIGA := Vector2(0.10, 0.26)
+const RANGE_T_HOT := Vector2(0.20, 0.38)
+const RANGE_H_DESERT := Vector2(0.14, 0.36)
+const RANGE_H_FOREST := Vector2(0.14, 0.30)
+const RANGE_H_RAIN := Vector2(0.05, 0.20)
 
 static var t_tundra := 0.20
 static var t_taiga := 0.40
@@ -145,30 +136,28 @@ static var h_desert := 0.25
 static var h_forest := 0.50
 static var h_rain := 0.60
 
+## Noise resources of the current seed, shared by the graph and the queries.
+static var _noises: Dictionary = {}
+static var _shape = null
 
-# --- Graine (GAME-1219) -------------------------------------------------------
 
-## Fixe la graine du monde. À appeler avant build() et avant tout get_height().
+# --- Seed --------------------------------------------------------------------
+
+## Sets the world seed. Call it before build() and before any query.
 static func set_world_seed(value: int) -> void:
 	world_seed = value
 	_roll_biome_thresholds()
-	_refresh_query()
+	_noises.clear()
+	_shape = null
 
-## Tire une graine au hasard, la fixe, et la renvoie (pour l'afficher/sauver).
+## Draws a random seed, sets it and returns it.
 static func randomize_world_seed() -> int:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
-	world_seed = int(rng.randi() % 1000000)
-	_roll_biome_thresholds()
-	_refresh_query()
+	set_world_seed(int(rng.randi() % 1000000))
 	return world_seed
 
-## Les bruits du générateur de requête suivent la graine.
-static func _refresh_query() -> void:
-	if _query != null:
-		_query.rebuild_noises()
-
-## Tire les seuils de biome de cette graine : chaque monde a ses proportions.
+## Draws this world's biome thresholds from the seed.
 static func _roll_biome_thresholds() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = world_seed * 31 + 7
@@ -179,225 +168,122 @@ static func _roll_biome_thresholds() -> void:
 	h_forest = h_desert + rng.randf_range(RANGE_H_FOREST.x, RANGE_H_FOREST.y)
 	h_rain = minf(h_forest + rng.randf_range(RANGE_H_RAIN.x, RANGE_H_RAIN.y), 0.95)
 
-## Résumé lisible des seuils de ce monde (console, écran de chargement).
+## Readable summary of this world's thresholds (console, loading screen).
 static func biome_thresholds_text() -> String:
 	return "toundra<%.2f, taïga<%.2f, chaud>%.2f | désert<%.2f, prairie<%.2f, savane<%.2f" % [
 		t_tundra, t_taiga, t_hot, h_desert, h_forest, h_rain]
 
 
-# --- Bruits (partagés graphe / GDScript) --------------------------------------
-# Les fréquences sont données en unités de monde puis converties en voxels.
+# --- Noises --------------------------------------------------------------------
 
-static func _freq(world_frequency: float) -> float:
-	return world_frequency * VOXEL_SIZE
+## The noise resources of the current seed, created on first use.
+## Keys: hills, mask, mountain, dither, temperature, humidity, rock,
+## cave_a, cave_b, room, entrance, ore, ore_type.
+static func noises() -> Dictionary:
+	if _noises.is_empty():
+		_noises = {
+			"hills": _noise(1, HILLS_PERIOD, HILLS_OCTAVES),
+			"mask": _noise(2, MASK_PERIOD, 2),
+			"mountain": _noise(3, MOUNTAIN_PERIOD, MOUNTAIN_OCTAVES),
+			"dither": _noise_voxels(4, DITHER_PERIOD_V, 1),
+			"temperature": _noise(10, TEMPERATURE_PERIOD, 1),
+			"humidity": _noise(11, HUMIDITY_PERIOD, 1),
+			"rock": _noise(12, ROCK_NOISE_PERIOD, 1),
+			"cave_a": _noise(20, CAVE_PERIOD, 1),
+			"cave_b": _noise(21, CAVE_PERIOD, 1),
+			"room": _noise(30, ROOM_PERIOD, 1),
+			"entrance": _noise(31, ENTRANCE_PERIOD, 1),
+			"ore": _noise(40, ORE_PERIOD, 1),
+			"ore_type": _noise(41, ORE_TYPE_PERIOD, 1),
+		}
+	return _noises
 
-static func make_height_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed
-	n.frequency = _freq(HEIGHT_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
-	n.fractal_octaves = HEIGHT_OCTAVES
-	n.domain_warp_enabled = true
-	n.domain_warp_type = FastNoiseLite.DOMAIN_WARP_SIMPLEX
-	n.domain_warp_amplitude = WARP_AMPLITUDE / VOXEL_SIZE
-	n.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
-	return n
+## Noise with a period given in world units.
+static func _noise(seed_offset: int, period: float, octaves: int) -> ZN_FastNoiseLite:
+	return _noise_voxels(seed_offset, period / VOXEL_SIZE, octaves)
 
-static func make_mask_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 2
-	n.frequency = _freq(MASK_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-static func make_ridge_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 3
-	n.frequency = _freq(RIDGE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
-	n.fractal_octaves = 3
-	return n
-
-static func make_temperature_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 10
-	n.frequency = _freq(TEMPERATURE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-static func make_humidity_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 11
-	n.frequency = _freq(HUMIDITY_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-static func make_cave_noise(index: int) -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 20 + index
-	n.frequency = _freq(CAVE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_FBM
-	n.fractal_octaves = 1
-	return n
-
-static func make_room_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 30
-	n.frequency = _freq(ROOM_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-## Taches où la croûte s'amincit : c'est là que les grottes débouchent.
-static func make_entrance_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.seed = world_seed + 71
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.frequency = _freq(ENTRANCE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
+## Noise with a period given in voxels (the graph works in voxels).
+static func _noise_voxels(seed_offset: int, period_v: float, octaves: int) -> ZN_FastNoiseLite:
+	var n := ZN_FastNoiseLite.new()
+	n.noise_type = ZN_FastNoiseLite.TYPE_OPEN_SIMPLEX_2S
+	n.seed = world_seed + seed_offset
+	n.period = period_v
+	if octaves > 1:
+		n.fractal_type = ZN_FastNoiseLite.FRACTAL_FBM
+		n.fractal_octaves = octaves
+	else:
+		n.fractal_type = ZN_FastNoiseLite.FRACTAL_NONE
 	return n
 
 
-## Irrégularité de la limite d'altitude des sommets rocheux.
-static func make_rock_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.seed = world_seed + 83
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.frequency = _freq(0.004)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
+# --- Terrain setup (shared by scenes) -----------------------------------------
 
-
-static func make_ore_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 40
-	n.frequency = _freq(ORE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-static func make_ore_type_noise() -> FastNoiseLite:
-	var n := FastNoiseLite.new()
-	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	n.seed = world_seed + 41
-	n.frequency = _freq(ORE_TYPE_FREQUENCY)
-	n.fractal_type = FastNoiseLite.FRACTAL_NONE
-	return n
-
-## Silhouette du terrain : X = bruit normalisé 0..1, Y = profil de hauteur.
-static func make_height_curve() -> Curve:
-	var c := Curve.new()
-	c.min_value = 0.0
-	c.max_value = 1.0
-	c.add_point(Vector2(0.0, 0.0))
-	c.add_point(Vector2(0.45, 0.10))
-	c.add_point(Vector2(0.65, 0.26))
-	c.add_point(Vector2(0.82, 0.58))
-	c.add_point(Vector2(1.0, 1.0))
-	c.bake()
-	return c
-
-## Répartition montagne : X = masque brut 0..1, Y = proportion de montagne.
-static func make_mask_curve() -> Curve:
-	var c := Curve.new()
-	c.min_value = 0.0
-	c.max_value = 1.0
-	c.add_point(Vector2(0.0, 0.0))
-	c.add_point(Vector2(0.30, 0.06))
-	c.add_point(Vector2(0.45, 0.45))
-	c.add_point(Vector2(0.60, 0.90))
-	c.add_point(Vector2(1.0, 1.0))
-	c.bake()
-	return c
-
-
-# --- Configuration du terrain (partagée par les scènes) -----------------------
-
-## Mesher Transvoxel qui transmet l'indice de matériau au shader (CUSTOM1).
+## Transvoxel mesher that passes the material index to the shader (CUSTOM1).
 static func make_mesher() -> VoxelMesherTransvoxel:
 	var m := VoxelMesherTransvoxel.new()
 	m.texturing_mode = VoxelMesherTransvoxel.TEXTURES_SINGLE_S4
 	m.textures_ignore_air_voxels = true
 	return m
 
-## Format des voxels : le mode « Single texture » exige un canal INDICES 8 bits.
+## Voxel format: "Single texture" mode needs an 8-bit INDICES channel.
 static func make_format() -> VoxelFormat:
 	var f := VoxelFormat.new()
 	f.set_channel_depth(VoxelBuffer.CHANNEL_INDICES, VoxelBuffer.DEPTH_8_BIT)
 	return f
 
-## Applique l'échelle de la grille : 1 voxel = VOXEL_SIZE unité de monde.
+## Applies the grid scale: 1 voxel = VOXEL_SIZE world units.
 static func apply_scale(terrain: VoxelLodTerrain) -> void:
 	terrain.scale = Vector3.ONE * VOXEL_SIZE
 
-## Monde -> voxels (coordonnées locales du terrain).
+## World -> voxels (terrain local coordinates).
 static func to_voxel(world_position: Vector3) -> Vector3:
 	return world_position / VOXEL_SIZE
 
-## Voxels -> monde.
+## Voxels -> world.
 static func to_world(voxel_position: Vector3) -> Vector3:
 	return voxel_position * VOXEL_SIZE
 
-
-# --- Requêtes de terrain (mêmes formules que la génération) -------------------
-#
-# Le monde n'est plus décrit par un graphe voxel mais par WorldGenerator, qui
-# raisonne en BLOCS. Pour que le spawn, la faune et les futurs outils lisent
-# exactement le même monde, tout passe par une instance de requête partagée.
-
-# Chargé paresseusement : WorldGenerator dépend déjà de ce fichier, un preload
-# dans les deux sens serait circulaire.
-static var _query = null
-
-## Générateur de requête (ses bruits suivent la graine).
-static func query():
-	if _query == null:
-		_query = load("res://world/world_generator.gd").new()
-	return _query
-
-## Générateur à poser sur le terrain.
+## Generator to put on the terrain.
 static func build() -> VoxelGenerator:
-	var generator = load("res://world/world_generator.gd").new()
-	print("[terrain] Monde en blocs — graine %d, seuils : %s" % [
-		world_seed, biome_thresholds_text()])
-	return generator
+	print("[terrain] Graine %d, seuils : %s" % [world_seed, biome_thresholds_text()])
+	return load(TERRAIN_GRAPH_PATH).build(noises())
 
-## Hauteur du sol au point (x,z), EN UNITÉS DE MONDE, quantifiée comme la
-## génération (blocs de BLOCK_SIZE, dalle de neige comprise).
+
+# --- Queries (same formulas as the graph) -------------------------------------
+
+static func shape():
+	if _shape == null:
+		_shape = load(TERRAIN_SHAPE_PATH).new(noises())
+	return _shape
+
+## Height of the rendered ground at (x, z), in WORLD UNITS.
 static func get_height(x: float, z: float) -> float:
-	var generator = query()
-	var bx := int(floor(x / VOXEL_SIZE / BLOCK_VOXELS))
-	var bz := int(floor(z / VOXEL_SIZE / BLOCK_VOXELS))
-	var column: Dictionary = generator.column_data(bx, bz)
-	var h: float = generator.smoothed_surface(bx, bz)
-	var hs := int(floor(h + 0.5))
-	if column["snow"]:
-		# Toundra : permafrost arasé au bloc, puis la dalle de neige.
-		hs = int(floor(float(hs) / float(BLOCK_VOXELS) + 0.5)) * BLOCK_VOXELS + 1
-	return float(hs) * VOXEL_SIZE
+	return (float(shape().top_voxels(x / VOXEL_SIZE, z / VOXEL_SIZE)) - 0.5) * VOXEL_SIZE
 
-## Température [0,1] au point (x,z) : bruit basse fréquence, corrigé par l'altitude.
+## Ground height of a block column, in voxels (used by the water).
+static func block_ground_voxels(bx: int, bz: int) -> float:
+	# The middle voxel of the block (a block is voxels 0, 1 and 2).
+	var vx := float(bx * BLOCK_VOXELS + 1)
+	var vz := float(bz * BLOCK_VOXELS + 1)
+	return float(shape().top_voxels(vx, vz)) - 0.5
+
+## How open the crust is at (x, z): 0 = full crust, 1 = cave entrance.
+static func get_entrance_openness(x: float, z: float) -> float:
+	return shape().entrance_openness(x / VOXEL_SIZE, z / VOXEL_SIZE)
+
+## Temperature [0, 1] at (x, z).
 static func get_temperature(x: float, z: float) -> float:
-	var generator = query()
-	var vx := x / VOXEL_SIZE
-	var vz := z / VOXEL_SIZE
-	return generator.temperature_at(vx, vz, generator.surface_voxels(vx, vz))
+	return shape().temperature(x / VOXEL_SIZE, z / VOXEL_SIZE)
 
-## Humidité [0,1] au point (x,z).
+## Humidity [0, 1] at (x, z).
 static func get_humidity(x: float, z: float) -> float:
-	return query().humidity_at(x / VOXEL_SIZE, z / VOXEL_SIZE)
+	return shape().humidity(x / VOXEL_SIZE, z / VOXEL_SIZE)
 
-## Biome au point (x,z) — voir BIOME_NAMES. Sert aussi à la faune et à la flore.
+## Biome at (x, z) — see BIOME_NAMES.
 static func get_biome(x: float, z: float) -> int:
 	return biome_from(get_temperature(x, z), get_humidity(x, z))
 
-## Biome à partir des deux taux (pyramide de la note Notion).
+## Biome from both rates (pyramid of the Notion note).
 static func biome_from(temperature: float, humidity: float) -> int:
 	if temperature < t_tundra:
 		return BIOME_TUNDRA
@@ -414,19 +300,3 @@ static func biome_from(temperature: float, humidity: float) -> int:
 	if humidity < h_rain:
 		return BIOME_SAVANNA
 	return BIOME_RAINFOREST
-
-## Matériau de surface d'un biome.
-static func surface_material_of(biome: int) -> int:
-	match biome:
-		BIOME_TUNDRA:
-			# Toundra : permafrost, trop froid pour l'herbe ; la neige est une
-			# dalle posée par-dessus par le générateur.
-			return MAT_PERMAFROST
-		BIOME_TAIGA:
-			return MAT_GRASS_COLD
-		BIOME_DESERT:
-			return MAT_SAND
-		BIOME_SAVANNA, BIOME_TEMPERATE_PRAIRIE:
-			return MAT_GRASS_DRY
-		_:
-			return MAT_GRASS
